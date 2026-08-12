@@ -518,11 +518,24 @@ multipass exec <vm-name> -- sudo npm install -g @openai/codex
 multipass exec <vm-name> -- sudo npm install -g @anthropic-ai/claude-code
 ```
 
-Optionally drop a short note into each installed harness's global instructions
-file (`~/.codex/AGENTS.md` for codex, `~/.claude/CLAUDE.md` for claude-code —
-never the target repo's own `AGENTS.md`/`CLAUDE.md`) that it's running in a
-disposable-feeling but actually persistent Multipass VM with full sudo, so the
-agent doesn't over-hedge on system changes.
+Drop a short note into each installed harness's global instructions file
+(`~/.codex/AGENTS.md` for codex, `~/.claude/CLAUDE.md` for claude-code — never
+the target repo's own `AGENTS.md`/`CLAUDE.md`) covering two things:
+
+- It's running in a disposable-feeling but actually persistent Multipass VM
+  with full sudo, so the agent doesn't over-hedge on system changes.
+- `gh` subcommands that go through GitHub's GraphQL endpoint
+  (`api.github.com/graphql`) will fail here — the gh-proxy's allowlist (set up
+  in step 4/7) only covers specific REST paths, and GraphQL isn't one of
+  them. `gh pr create` is the common case that trips this; use the REST
+  equivalent instead:
+  ```bash
+  gh api -X POST repos/<org>/<repo>/pulls \
+      -f title="My PR title" \
+      -f head="my-branch-name" \
+      -f base="main" \
+      -f body="Description here"
+  ```
 
 ## 6. Set up SSH access
 
