@@ -1,0 +1,23 @@
+[
+  {
+    "key": "github-host-login",
+    "display_name": "GitHub host login",
+    "command": "gh auth token",
+    "ttl_seconds": 300,
+    "notes": "Reads the live token from this host's own `gh auth login` session. Run `gh auth login` once on this host if it isn't already."
+  },
+  {
+    "key": "claude-code-subscription",
+    "display_name": "Claude Code subscription",
+    "command": "orca-proxy-refresh-claude",
+    "ttl_seconds": 1800,
+    "notes": "Refreshes whichever account is logged into Claude Code on this host (~/.claude/.credentials.json). Run `claude` and log in once on this host first."
+  },
+  {
+    "key": "codex-subscription",
+    "display_name": "Codex subscription",
+    "command": "orca-proxy-refresh-codex",
+    "ttl_seconds": 1800,
+    "notes": "Refreshes whichever account is logged into Codex on this host (~/.codex/auth.json). Run `codex login` once on this host first."
+  }
+]

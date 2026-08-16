@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from aiohttp import web
 
 from . import ca, config, db, request_log
@@ -66,6 +68,19 @@ def create_app() -> web.Application:
             web.get("/api/v1/requests/{id}", requests_api.get_request),
         ]
     )
+
+    # Web UI (#15): dependency-free static assets, served directly (no
+    # build step, no separate frontend server) — the same aiohttp process
+    # already serving the Management API. index.html's relative
+    # <link>/<script> paths and app.js's relative fetch() calls all resolve
+    # against "/", so the whole directory is mounted there.
+    static_dir = Path(__file__).parent / "static"
+
+    async def index(_request: web.Request) -> web.FileResponse:
+        return web.FileResponse(static_dir / "index.html")
+
+    app.router.add_get("/", index)
+    app.router.add_static("/", static_dir, name="static")
 
     async def close_db(_app: web.Application) -> None:
         conn.close()
