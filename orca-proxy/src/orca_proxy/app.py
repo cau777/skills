@@ -1,6 +1,7 @@
 from aiohttp import web
 
 from . import ca, config, db
+from .credential_exec import CredentialCache
 from .errors import error_middleware
 from .handlers import ca as ca_handlers
 from .handlers import credentials as credential_handlers
@@ -26,6 +27,8 @@ def create_app() -> web.Application:
     ca_row = ca.ensure_generated(conn)
     ca.materialize(ca_row, config.ca_cert_path())
     app["ca_materialized"] = True
+
+    app["credential_cache"] = CredentialCache()
 
     app.add_routes(
         [

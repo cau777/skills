@@ -37,6 +37,17 @@ class ValidationFailed(ApiError):
     code = "validation_failed"
 
 
+class CredentialUnavailable(ApiError):
+    """Fail-closed response when a matched Allow-with-credential Rule's
+    Credential command failed, timed out, or produced invalid output (#10).
+    Used by the proxy core (later slice); defined here so the error taxonomy
+    stays in one place.
+    """
+
+    status = 502
+    code = "credential_unavailable"
+
+
 @web.middleware
 async def error_middleware(request: web.Request, handler):
     try:
