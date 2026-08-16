@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 
 
@@ -21,6 +22,32 @@ def db_path() -> Path:
 
 def requests_db_path() -> Path:
     return data_dir() / "requests.sqlite"
+
+
+def bridge_interface() -> str:
+    return os.environ.get("ORCA_PROXY_BRIDGE", "mpqemubr0")
+
+
+def proxy_port() -> int:
+    return int(os.environ.get("ORCA_PROXY_PORT", "8443"))
+
+
+def management_api_port() -> int:
+    return int(os.environ.get("ORCA_PROXY_MANAGEMENT_PORT", "8080"))
+
+
+def firewall_sync_script_path() -> Path:
+    """Absolute path to the installed console-script entry point (#12) —
+    the sudoers NOPASSWD entry names this exact path, so it has to be
+    resolvable without relying on $PATH. Defaults to the sibling of the
+    current Python interpreter's own bin/ directory (i.e. the same venv
+    orca-proxy itself is running from), overridable for deployments that
+    place it elsewhere.
+    """
+    raw = os.environ.get("ORCA_PROXY_FIREWALL_SCRIPT")
+    if raw:
+        return Path(raw)
+    return Path(sys.executable).parent / "orca-proxy-firewall-sync"
 
 
 def ca_cert_path() -> Path:

@@ -8,18 +8,22 @@ itself, mitmproxy's own transparent-mode layer (SO_ORIGINAL_DST recovery)
 does that. This addon only makes policy decisions and does the SQLite/exec
 work around them.
 
-Not yet wired into app.py's aiohttp process (per #4, both are meant to share
-one process/event loop eventually) — this addon opens its own connections to
-the same state.sqlite/requests.sqlite files, which is a valid interim
-simplification (SQLite supports concurrent WAL-mode connections) but the
-"run aiohttp inside mitmdump's own loop" embedding is a follow-up wiring task,
-noted here rather than silently assumed.
+Also starts the Management API (app.create_app()) on mitmdump's own asyncio
+loop via the running()/done() addon hooks, satisfying #4's "same process"
+decision — `mitmdump -s proxy_addon.py` is the entire deployed service, one
+process, no separate aiohttp process to run or supervise. The embedded
+aiohttp app opens its own state.sqlite/requests.sqlite connections separate
+from this addon's own (below) — a small, deliberate duplication rather than
+threading one set of connections through two independently-hookable
+lifecycles; SQLite's WAL mode makes concurrent connections to the same file
+safe, so nothing correctness-sensitive depends on avoiding it.
 """
 
 import base64
 import time
 from urllib.parse import parse_qsl, urlparse
 
+from aiohttp import web
 from mitmproxy import http, tls
 
 # Absolute imports, not package-relative: mitmdump loads this file as a
@@ -28,6 +32,7 @@ from mitmproxy import http, tls
 # mitmdump runs inside the same locked venv orca-proxy is installed into
 # (`uv run mitmdump -s ...`), per #4/#12's deployment model.
 from orca_proxy import config, db, request_log, rule_engine
+from orca_proxy.app import create_app
 from orca_proxy.credential_exec import CredentialCache, CredentialExecutionError
 from orca_proxy.redaction import redact_headers
 from orca_proxy.repo import credentials as credentials_repo
@@ -51,6 +56,7 @@ class OrcaProxyAddon:
         self._requests_conn = None
         self._log = None
         self._credentials = CredentialCache()
+        self._api_runner: web.AppRunner | None = None
 
     def load(self, loader) -> None:
         self._state_conn = db.connect(config.db_path())
@@ -60,6 +66,18 @@ class OrcaProxyAddon:
         db.migrate(self._state_conn)
         self._requests_conn = request_log.connect(config.requests_db_path())
         self._log = request_log.RequestLog(self._requests_conn)
+
+    async def running(self) -> None:
+        # Fires once mitmproxy's own proxy server is up — this is where the
+        # embedded Management API starts, on the same already-running loop.
+        self._api_runner = web.AppRunner(create_app())
+        await self._api_runner.setup()
+        site = web.TCPSite(self._api_runner, "127.0.0.1", config.management_api_port())
+        await site.start()
+
+    async def done(self) -> None:
+        if self._api_runner is not None:
+            await self._api_runner.cleanup()
 
     # --- shared lookups (fresh-read each time — simplest correct v1
     # behavior; the DB is local SQLite, so this isn't the bottleneck it

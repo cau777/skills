@@ -277,6 +277,27 @@ def test_client_disconnected_records_duration(addon):
     assert row["duration_ms"] >= 0
 
 
+async def test_running_embeds_the_management_api_on_the_same_loop(tmp_path, monkeypatch, unused_tcp_port):
+    monkeypatch.setenv("ORCA_PROXY_HOME", str(tmp_path))
+    monkeypatch.setenv("ORCA_PROXY_MANAGEMENT_PORT", str(unused_tcp_port))
+    a = OrcaProxyAddon()
+    a.load(None)
+    try:
+        await a.running()
+
+        import aiohttp
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"http://127.0.0.1:{unused_tcp_port}/readyz") as resp:
+                assert resp.status == 200
+                body = await resp.json()
+                assert body["ready"] is True
+    finally:
+        await a.done()
+        a._state_conn.close()
+        a._requests_conn.close()
+
+
 async def test_headers_redacted_in_logged_request(addon):
     _put_vm(addon)
     _put_credential(addon, command="echo secret-value")
