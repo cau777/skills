@@ -1,5 +1,4 @@
 import os
-import sys
 from pathlib import Path
 
 
@@ -38,16 +37,19 @@ def management_api_port() -> int:
 
 def firewall_sync_script_path() -> Path:
     """Absolute path to the installed console-script entry point (#12) —
-    the sudoers NOPASSWD entry names this exact path, so it has to be
-    resolvable without relying on $PATH. Defaults to the sibling of the
-    current Python interpreter's own bin/ directory (i.e. the same venv
-    orca-proxy itself is running from), overridable for deployments that
-    place it elsewhere.
+    the sudoers NOPASSWD entry names this exact path, so it must stay
+    stable across upgrades. Deliberately built from the `current` symlink
+    (~/.orca-proxy/current/venv/bin/...) rather than sys.executable — the
+    running interpreter's own path resolves through the symlink to a
+    version-specific target, which would change on every blue-green upgrade
+    and require a fresh sudoers entry each time, defeating the point of the
+    symlink. install.sh's layout (deploy/install.sh) is the source of truth
+    this mirrors.
     """
     raw = os.environ.get("ORCA_PROXY_FIREWALL_SCRIPT")
     if raw:
         return Path(raw)
-    return Path(sys.executable).parent / "orca-proxy-firewall-sync"
+    return data_dir() / "current" / "venv" / "bin" / "orca-proxy-firewall-sync"
 
 
 def ca_cert_path() -> Path:

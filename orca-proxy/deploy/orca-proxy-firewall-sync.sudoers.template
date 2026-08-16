@@ -1,0 +1,16 @@
+# orca-proxy firewall-sync sudoers entry (design ticket #12).
+#
+# Grants the unprivileged service user NOPASSWD access to exactly one
+# script — the sudoers-gated helper the Management API shells out to via
+# `sudo -n` on every VM create/delete (firewall.py's FirewallSync). No
+# other command, and no interactive password, is ever needed.
+#
+# install.sh substitutes __USER__ before writing this to
+# /etc/sudoers.d/orca-proxy-firewall-sync (mode 0440, validated with
+# `visudo -c` before being trusted). The path below intentionally goes
+# through the `current` symlink (not a resolved, version-specific path) so
+# upgrades never require rewriting this file — see
+# config.firewall_sync_script_path()'s docstring for why sys.executable
+# would have broken this.
+
+__USER__ ALL=(root) NOPASSWD: /home/__USER__/.orca-proxy/current/venv/bin/orca-proxy-firewall-sync
