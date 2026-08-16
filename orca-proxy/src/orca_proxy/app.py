@@ -1,11 +1,12 @@
 from aiohttp import web
 
-from . import ca, config, db
+from . import ca, config, db, request_log
 from .credential_exec import CredentialCache
 from .errors import error_middleware
 from .handlers import ca as ca_handlers
 from .handlers import credentials as credential_handlers
 from .handlers import health as health_handlers
+from .handlers import requests_api
 from .handlers import rules as rule_handlers
 from .handlers import vms as vm_handlers
 
@@ -30,6 +31,9 @@ def create_app() -> web.Application:
 
     app["credential_cache"] = CredentialCache()
 
+    requests_conn = request_log.connect(config.requests_db_path())
+    app["request_log"] = request_log.RequestLog(requests_conn)
+
     app.add_routes(
         [
             web.get("/readyz", health_handlers.readyz),
@@ -46,11 +50,14 @@ def create_app() -> web.Application:
             web.get("/api/v1/rules/{name}", rule_handlers.get_rule),
             web.put("/api/v1/rules/{name}", rule_handlers.put_rule),
             web.delete("/api/v1/rules/{name}", rule_handlers.delete_rule),
+            web.get("/api/v1/requests", requests_api.list_requests),
+            web.get("/api/v1/requests/{id}", requests_api.get_request),
         ]
     )
 
     async def close_db(_app: web.Application) -> None:
         conn.close()
+        requests_conn.close()
 
     app.on_cleanup.append(close_db)
     return app

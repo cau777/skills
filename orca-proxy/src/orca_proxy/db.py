@@ -2,7 +2,8 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-MIGRATIONS_DIR = Path(__file__).parent / "migrations"
+STATE_MIGRATIONS_DIR = Path(__file__).parent / "migrations"
+REQUESTS_MIGRATIONS_DIR = Path(__file__).parent / "requests_migrations"
 
 
 def now_iso() -> str:
@@ -18,7 +19,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def migrate(conn: sqlite3.Connection) -> None:
+def migrate(conn: sqlite3.Connection, migrations_dir: Path = STATE_MIGRATIONS_DIR) -> None:
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -30,7 +31,7 @@ def migrate(conn: sqlite3.Connection) -> None:
     applied = {row["version"] for row in conn.execute("SELECT version FROM schema_migrations")}
 
     pending = sorted(
-        (int(p.name.split("_", 1)[0]), p) for p in MIGRATIONS_DIR.glob("*.sql")
+        (int(p.name.split("_", 1)[0]), p) for p in migrations_dir.glob("*.sql")
     )
     for version, path in pending:
         if version in applied:

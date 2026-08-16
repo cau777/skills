@@ -19,5 +19,9 @@ def db_path() -> Path:
     return data_dir() / "state.sqlite"
 
 
+def requests_db_path() -> Path:
+    return data_dir() / "requests.sqlite"
+
+
 def ca_cert_path() -> Path:
     return data_dir() / "mitmproxy-ca-cert.pem"
