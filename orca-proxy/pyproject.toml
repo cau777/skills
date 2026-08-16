@@ -11,6 +11,8 @@ dependencies = [
 
 [project.scripts]
 orca-proxy-firewall-sync = "orca_proxy.cli.firewall_sync:main"
+orca-proxy-refresh-claude = "orca_proxy.cli.refresh_claude:main"
+orca-proxy-refresh-codex = "orca_proxy.cli.refresh_codex:main"
 
 [dependency-groups]
 dev = [
