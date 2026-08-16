@@ -46,38 +46,40 @@ def validate_hostname(value: object, field: str = "hostname") -> str:
     return host
 
 
-def validate_path_prefix(value: object, field: str = "path_prefix") -> str:
+def is_safe_absolute_path(value: str) -> bool:
+    """Non-raising check shared by write-time path_prefix validation (below)
+    and live request-path eligibility (rule_engine.py) — both need the exact
+    same "is this path form unambiguous enough to trust" rule from #5 step 7:
+    reject dot-segments, percent-encoding, and empty segments.
+    """
     if not isinstance(value, str) or not value.startswith("/"):
-        raise ValidationFailed(
-            f"'{field}' must be an absolute path starting with '/'",
-            fields={field: "must be an absolute path"},
-        )
-    if "%" in value:
-        raise ValidationFailed(
-            f"'{field}' must not contain percent-encoded characters",
-            fields={field: "percent-encoding not allowed"},
-        )
-    if unquote(value) != value:
-        raise ValidationFailed(
-            f"'{field}' must not contain percent-encoded characters",
-            fields={field: "percent-encoding not allowed"},
-        )
+        return False
+    if "%" in value or unquote(value) != value:
+        return False
     segments = value.split("/")
     if any(seg in (".", "..") for seg in segments):
-        raise ValidationFailed(
-            f"'{field}' must not contain '.' or '..' segments",
-            fields={field: "dot-segments not allowed"},
-        )
+        return False
     # collapse duplicate slashes' resulting empty segments, except the
     # leading one that "/".split("/") always produces
     if any(seg == "" for seg in segments[1:-1]):
-        raise ValidationFailed(
-            f"'{field}' must not contain empty path segments",
-            fields={field: "empty segment not allowed"},
-        )
+        return False
+    return True
+
+
+def normalize_path(value: str) -> str:
     if value != "/" and value.endswith("/"):
-        value = value[:-1]
+        return value[:-1]
     return value
+
+
+def validate_path_prefix(value: object, field: str = "path_prefix") -> str:
+    if not isinstance(value, str) or not is_safe_absolute_path(value):
+        raise ValidationFailed(
+            f"'{field}' must be a safe absolute path (no '.'/'..' segments, "
+            "no percent-encoding, no empty segments)",
+            fields={field: "must be a safe absolute path"},
+        )
+    return normalize_path(value)
 
 
 def validate_vm_selector(value: object, existing_vm_names: set[str]) -> dict:
