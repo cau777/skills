@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "aiohttp>=3.9",
     "cryptography>=42",
+    "mitmproxy>=10,<11",
 ]
 
 [dependency-groups]

@@ -1,5 +1,3 @@
-import json
-
 from aiohttp import web
 
 from .. import validation
@@ -9,17 +7,7 @@ from ..repo import rules as rules_repo
 from ..repo import vms as vms_repo
 from . import db_conn, read_json_body, reject_unknown_fields
 
-
-def _serialize(row) -> dict:
-    return {
-        "name": row["name"],
-        "priority": row["priority"],
-        "vm_selector": json.loads(row["vm_selector_json"]),
-        "hostname": row["hostname"],
-        "action": json.loads(row["action_json"]),
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-    }
+_serialize = rules_repo.to_dict
 
 
 def _validate_priority(value: object) -> int:

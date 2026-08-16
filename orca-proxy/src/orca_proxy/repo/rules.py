@@ -48,3 +48,19 @@ def put(
 
 def delete(conn: sqlite3.Connection, name: str) -> None:
     conn.execute("DELETE FROM rules WHERE name = ?", (name,))
+
+
+def to_dict(row: sqlite3.Row) -> dict:
+    """Shared shape consumed by both the Management API handlers and the
+    proxy addon's rule_engine (which expects vm_selector/action as parsed
+    dicts, not raw JSON text).
+    """
+    return {
+        "name": row["name"],
+        "priority": row["priority"],
+        "vm_selector": json.loads(row["vm_selector_json"]),
+        "hostname": row["hostname"],
+        "action": json.loads(row["action_json"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
