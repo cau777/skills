@@ -155,7 +155,15 @@ as_user "ln -sfn $(printf '%q' "$INSTALL_DIR") $(printf '%q' "$CURRENT_LINK")"
 echo "Starting orca-proxy.service"
 loginctl enable-linger "$TARGET_USER"
 systemctl start "user@$TARGET_UID.service" 2>/dev/null || true
-as_user "systemctl --user daemon-reload && systemctl --user enable --now orca-proxy.service"
+# `enable --now` is a no-op on an already-running unit -- it does NOT
+# restart it. On an upgrade that silently leaves the OLD process running
+# (old code, old config.firewall_sync_script_path() resolution, etc.)
+# despite `current` having been correctly repointed -- the exact failure
+# mode that motivated pinning the sudoers args in the first place stays
+# invisible until something finally triggers a real reconcile call, which
+# then 403s against the freshly-written sudoers file. `restart`
+# unconditionally guarantees the new version is actually what's running.
+as_user "systemctl --user daemon-reload && systemctl --user enable orca-proxy.service && systemctl --user restart orca-proxy.service"
 
 sleep 2
 as_user "systemctl --user is-active --quiet orca-proxy.service" || {
