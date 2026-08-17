@@ -1,9 +1,31 @@
 #!/usr/bin/env bash
-# Copies every skill in this repo (any top-level directory containing a
-# SKILL.md) into the local Claude and Codex skills directories.
+# Installs Jetty's agent skills into the local Claude and Codex skills
+# directories. It works from a checkout or when downloaded and piped to bash.
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_URL="${JETTY_REPO_URL:-https://github.com/cau777/jetty-vm.git}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$SCRIPT_DIR"
+TEMP_REPO_DIR=""
+
+cleanup() {
+  if [ -n "$TEMP_REPO_DIR" ]; then
+    rm -rf "$TEMP_REPO_DIR"
+  fi
+}
+trap cleanup EXIT
+
+# A script received over stdin lives in a temporary directory, not a Jetty
+# checkout. Fetch the repository so the skill directories are available.
+if ! compgen -G "$REPO_DIR"'/*/SKILL.md' > /dev/null; then
+  command -v git > /dev/null || {
+    echo "git is required to install Jetty from the standalone script." >&2
+    exit 1
+  }
+  TEMP_REPO_DIR="$(mktemp -d "${TMPDIR:-/tmp}/jetty-vm.XXXXXX")"
+  git clone --depth=1 "$REPO_URL" "$TEMP_REPO_DIR"
+  REPO_DIR="$TEMP_REPO_DIR"
+fi
 
 CLAUDE_SKILLS_DIR="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
 CODEX_SKILLS_DIR="${CODEX_SKILLS_DIR:-${CODEX_HOME:-$HOME/.codex}/skills}"

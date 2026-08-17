@@ -1,9 +1,9 @@
-Research for [cau777/skills#13](https://github.com/cau777/skills/issues/13) — "Hostname-policy bypass containment: ECH, missing SNI, direct IP, custom DNS, DoH" (child of the design-spec map, [#1](https://github.com/cau777/skills/issues/1))
+Research for [cau777/jetty-vm#13](https://github.com/cau777/jetty-vm/issues/13) — "Hostname-policy bypass containment: ECH, missing SNI, direct IP, custom DNS, DoH" (child of the design-spec map, [#1](https://github.com/cau777/jetty-vm/issues/1))
 
 **Date:** 2026-08-15
 **Method:** Primary-source only. mitmproxy was cloned at `--depth 1` (commit `bae1a7e179da7f9e516ba1b9fe0743f4fd758894`, 2026-08-13) into the scratchpad and read directly; paths below are relative to the repo root. RFC text is quoted from `rfc-editor.org`. IANA registry values are quoted from `iana.org`. Linux netfilter claims are quoted from the local `man 8 iptables` / `man 8 iptables-extensions` pages (same install used in the prior research at `research/transparent-mitm-passthrough.md`) and the nftables wiki. Every claim below is followed by its source; anything not directly confirmed from a primary source is explicitly flagged as an inference.
 
-This document assumes the architecture and rule semantics already fixed by [#3](https://github.com/cau777/skills/issues/3) (host-side DNAT `REDIRECT` on `mpqemubr0`, mitmproxy `tls_clienthello`/`next_layer` SNI-peek-then-splice-or-MITM) and [#5](https://github.com/cau777/skills/issues/5) (host-exact, priority-ordered Allow/Block/Allow-with-credential rules; **unmatched traffic defaults to Allow**). Neither is revisited here.
+This document assumes the architecture and rule semantics already fixed by [#3](https://github.com/cau777/jetty-vm/issues/3) (host-side DNAT `REDIRECT` on `mpqemubr0`, mitmproxy `tls_clienthello`/`next_layer` SNI-peek-then-splice-or-MITM) and [#5](https://github.com/cau777/jetty-vm/issues/5) (host-exact, priority-ordered Allow/Block/Allow-with-credential rules; **unmatched traffic defaults to Allow**). Neither is revisited here.
 
 ---
 

@@ -1,7 +1,7 @@
 # Claude Code & Codex CLI: Inference-Endpoint Hostnames and Placeholder-Auth Mechanisms
 
-Research for [cau777/skills#16](https://github.com/cau777/skills/issues/16) — distinct from
-[#2](https://github.com/cau777/skills/issues/2)'s OAuth *refresh*-endpoint findings
+Research for [cau777/jetty-vm#16](https://github.com/cau777/jetty-vm/issues/16) — distinct from
+[#2](https://github.com/cau777/jetty-vm/issues/2)'s OAuth *refresh*-endpoint findings
 (`platform.claude.com/v1/oauth/token`, `auth.openai.com/oauth/token`). This document is
 about the hostname(s) used for **real model/inference calls**, and whether each CLI can be
 coaxed into sending a request carrying a placeholder `Authorization`-shaped credential via a

@@ -1,4 +1,4 @@
-Research for [cau777/skills#3](https://github.com/cau777/skills/issues/3) — "Transparent MITM + selective passthrough implementation survey"
+Research for [cau777/jetty-vm#3](https://github.com/cau777/jetty-vm/issues/3) — "Transparent MITM + selective passthrough implementation survey"
 
 **Date:** 2026-08-15
 **Method:** Primary-source only. mitmproxy, `inetaf/tcpproxy`, and `sniproxy` were cloned at `--depth 1` and read directly (paths below are relative to each repo root). nginx/HAProxy/iptables/nftables/Linux-kernel claims are quoted from official docs, man pages, and the actual kernel source file, fetched or read locally. Every claim below is followed by its source.

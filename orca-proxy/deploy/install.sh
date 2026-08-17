@@ -5,7 +5,7 @@ set -euo pipefail
 #
 # Must run as root:
 #   sudo bash deploy/install.sh                     (from an existing checkout)
-#   curl -fsSL https://raw.githubusercontent.com/cau777/skills/main/orca-proxy/deploy/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/cau777/jetty-vm/main/orca-proxy/deploy/install.sh | sudo bash
 #
 # Why root now, when the old install.sh ran as the target user and only
 # sudo'd two small steps: the firewall-sync helper's sudoers NOPASSWD entry
@@ -25,14 +25,14 @@ set -euo pipefail
 # script only elevates for the two things that actually need it: writing
 # the sudoers file, and installing the root-owned firewall-sync copy.
 
-ORCA_PROXY_GIT_URL="${ORCA_PROXY_GIT_URL:-https://github.com/cau777/skills.git}"
+ORCA_PROXY_GIT_URL="${ORCA_PROXY_GIT_URL:-https://github.com/cau777/jetty-vm.git}"
 
 if [ "$(id -u)" -ne 0 ]; then
   cat >&2 <<'MSG'
 !! orca-proxy's installer must run as root:
      sudo bash deploy/install.sh
    or, with no local checkout:
-     curl -fsSL https://raw.githubusercontent.com/cau777/skills/main/orca-proxy/deploy/install.sh | sudo bash
+     curl -fsSL https://raw.githubusercontent.com/cau777/jetty-vm/main/orca-proxy/deploy/install.sh | sudo bash
 MSG
   exit 1
 fi

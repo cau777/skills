@@ -1,7 +1,7 @@
 # orca-proxy — Design Spec
 
 This document is the written design spec produced by the `wayfinder` planning
-cycle on [cau777/skills#1](https://github.com/cau777/skills/issues/1) ("Unified
+cycle on [cau777/jetty-vm#1](https://github.com/cau777/jetty-vm/issues/1) ("Unified
 VM credential-injection & logging proxy"). It consolidates the decisions
 reached across tickets #2–#17 into one reference, and reflects the shipped
 implementation — every schema, endpoint, and algorithm described below is the
