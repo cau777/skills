@@ -384,8 +384,14 @@ Served as static files by the same aiohttp process as the Management API
   `fetch()` and by a Python compatibility test
   (`tests/test_quick_add_catalog.py`) — not a new API endpoint, and not
   duplicated data. Contains the three known-working Credential command
-  templates: `gh auth token` (GitHub), and the `orca-proxy-refresh-claude` /
-  `orca-proxy-refresh-codex` console scripts.
+  templates: `gh auth token` (GitHub), and pure-bash (curl + jq)
+  reimplementations of the `orca-proxy-refresh-claude` /
+  `orca-proxy-refresh-codex` OAuth-refresh logic for Claude/Codex — inlined
+  rather than shelling out to those console scripts, so a Credential command
+  has no dependency on the venv's `bin/` being on `PATH` (nothing puts it
+  there). The console scripts themselves still exist and are still tested
+  (`tests/test_refresh_scripts.py`) as the readable reference implementation
+  the bash was transcribed from; Quick Add just doesn't call them.
 - No URL-based routing — in-memory view state, matching the prototype.
 - Logs view refresh is a manual button, not polling.
 

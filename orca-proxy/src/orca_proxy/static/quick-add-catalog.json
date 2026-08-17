@@ -9,14 +9,14 @@
   {
     "key": "claude-code-subscription",
     "display_name": "Claude Code subscription",
-    "command": "orca-proxy-refresh-claude",
+    "command": "set -euo pipefail\ncreds_file=\"$HOME/.claude/.credentials.json\"\nrefresh_token=$(jq -r '.claudeAiOauth.refreshToken // empty' \"$creds_file\")\nif [ -z \"$refresh_token\" ]; then\n  echo \"$creds_file: claudeAiOauth.refreshToken missing -- run \\`claude\\` and log in on this host first\" >&2\n  exit 1\nfi\nbody=$(jq -n --arg rt \"$refresh_token\" '{client_id:\"9d1c250a-e61b-44d9-88ed-5944d1962f5e\",grant_type:\"refresh_token\",refresh_token:$rt,scope:\"user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload\"}')\nresp=$(curl -fsS -X POST https://platform.claude.com/v1/oauth/token \\\n  -H 'Accept: application/json, text/plain, */*' \\\n  -H 'Content-Type: application/json' \\\n  -H 'User-Agent: axios/1.15.2' \\\n  -H 'Connection: close' \\\n  -d \"$body\")\naccess_token=$(echo \"$resp\" | jq -r '.access_token // empty')\nif [ -z \"$access_token\" ]; then\n  echo \"refresh response missing access_token\" >&2\n  exit 1\nfi\nnew_refresh=$(echo \"$resp\" | jq -r '.refresh_token // empty')\nif [ -z \"$new_refresh\" ]; then\n  new_refresh=\"$refresh_token\"\nfi\nmode=$(stat -c %a \"$creds_file\")\ntmp=\"$creds_file.tmp\"\njq --arg at \"$access_token\" --arg rt \"$new_refresh\" '.claudeAiOauth.refreshToken=$rt | .claudeAiOauth.accessToken=$at' \"$creds_file\" > \"$tmp\"\nchmod \"$mode\" \"$tmp\"\nmv \"$tmp\" \"$creds_file\"\necho \"$access_token\"\n",
     "ttl_seconds": 1800,
     "notes": "Refreshes whichever account is logged into Claude Code on this host (~/.claude/.credentials.json). Run `claude` and log in once on this host first."
   },
   {
     "key": "codex-subscription",
     "display_name": "Codex subscription",
-    "command": "orca-proxy-refresh-codex",
+    "command": "set -euo pipefail\nauth_file=\"$HOME/.codex/auth.json\"\nrefresh_token=$(jq -r '.tokens.refresh_token // empty' \"$auth_file\")\nif [ -z \"$refresh_token\" ]; then\n  echo \"$auth_file: tokens.refresh_token missing -- run \\`codex login\\` on this host first\" >&2\n  exit 1\nfi\nresp=$(curl -fsS -X POST https://auth.openai.com/oauth/token \\\n  -H 'Content-Type: application/x-www-form-urlencoded' \\\n  -H 'Accept: application/json' \\\n  --data-urlencode client_id=app_EMoamEEZ73f0CkXaXp7hrann \\\n  --data-urlencode grant_type=refresh_token \\\n  --data-urlencode refresh_token=\"$refresh_token\" \\\n  --data-urlencode 'scope=openid profile email')\naccess_token=$(echo \"$resp\" | jq -r '.access_token // empty')\nnew_refresh=$(echo \"$resp\" | jq -r '.refresh_token // empty')\nif [ -z \"$access_token\" ] || [ -z \"$new_refresh\" ]; then\n  echo \"refresh response missing access_token or refresh_token\" >&2\n  exit 1\nfi\nmode=$(stat -c %a \"$auth_file\")\ntmp=\"$auth_file.tmp\"\njq --arg at \"$access_token\" --arg rt \"$new_refresh\" '.tokens.access_token=$at | .tokens.refresh_token=$rt' \"$auth_file\" > \"$tmp\"\nchmod \"$mode\" \"$tmp\"\nmv \"$tmp\" \"$auth_file\"\necho \"$access_token\"\n",
     "ttl_seconds": 1800,
     "notes": "Refreshes whichever account is logged into Codex on this host (~/.codex/auth.json). Run `codex login` once on this host first."
   }

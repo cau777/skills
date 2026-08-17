@@ -368,14 +368,18 @@ curl -fsS -X PUT "http://127.0.0.1:8080/api/v1/rules/<vm-name>-github-api" \
     "action": {"type": "allow_with_credential", "credential": "github-host-login",
                "path_prefix": "/repos/<org>/<repo>", "injection": {"type": "bearer"}}
   }'
-# only if push access was requested:
+# only if push access was requested — path_prefix MUST include the ".git"
+# suffix: the rule engine's path_prefix match is segment-boundary-aware
+# (matches only on "/" or end-of-string), and git's smart-HTTP client always
+# requests "/<org>/<repo>.git/info/refs" etc., so a prefix of "/<org>/<repo>"
+# (no ".git") never matches and every git push/fetch 401s:
 curl -fsS -X PUT "http://127.0.0.1:8080/api/v1/rules/<vm-name>-github-git" \
   -H 'Content-Type: application/json' -d '{
     "priority": <next available>,
     "vm_selector": {"type": "only", "vms": ["<vm-name>"]},
     "hostname": "github.com",
     "action": {"type": "allow_with_credential", "credential": "github-host-login",
-               "path_prefix": "/<org>/<repo>", "injection": {"type": "basic", "username": "x-access-token"}}
+               "path_prefix": "/<org>/<repo>.git", "injection": {"type": "basic", "username": "x-access-token"}}
   }'
 ```
 
