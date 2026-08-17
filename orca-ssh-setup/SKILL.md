@@ -107,18 +107,38 @@ systemctl --user status orca-proxy.service
 If active, skip straight to 3c — do not reinstall or restart a service that
 may already be enforcing other projects' VMs.
 
-**3b. If absent, install it.** The install script builds a versioned,
-locked environment and writes the systemd unit + sudoers entry for you; the
-two sudo-requiring parts (sudoers, and the firewall-sync script it gates) are
-attempted automatically and fall back to asking the user only if the session
-can't get a passwordless sudo prompt — the same fallback line already drawn
-for `apt-get install mitmproxy` in the previous setup, not a stricter bar for
-this app:
+**3b. If absent, install it.** The install script must run as root in its
+entirety, not just for two small steps — it installs the firewall-sync
+helper to a root-owned location outside the target user's home directory,
+which only root can arrange (a NOPASSWD sudoers entry pointing at anything
+writable by the user it names is a straight escalation, which an earlier
+version of this install had).
+
+**Never attempt this with `sudo -n`, even if it happens to succeed
+passwordlessly.** Unlike the sudoers-gated firewall-sync helper the
+Management API calls routinely (safe to auto-invoke *because* it's a
+root-owned binary with pinned arguments the `cau777` account cannot
+influence), `install.sh` is an arbitrary, user-writable script — running it
+as root without a human typing their password would just re-create the same
+escalation shape one level up (anything that can write to this checkout
+could get root, unattended, the moment a general passwordless-sudo grant
+exists for any reason). Installing/upgrading orca-proxy is a deliberate,
+human-authorized action, full stop — hand the user the exact command and
+wait for them to run it themselves:
 
 ```bash
 ORCA_PROXY_REPO=<path to a checkout of the orca-proxy source>
-bash "$ORCA_PROXY_REPO/deploy/install.sh"
+echo "Need one-time root access to install orca-proxy — please run:" >&2
+echo "  sudo bash $ORCA_PROXY_REPO/deploy/install.sh" >&2
 ```
+
+Everything *unprivileged* (the venv, the systemd **user** unit, the data
+directory) still ends up owned by and running as the invoking user, not
+root — only the sudoers file and the firewall-sync helper's install
+location need the elevated run. Upgrading later is the same command, run
+again by the user — there is no passwordless path left that reprovisions
+the privileged half on its own, by design (see the installed orca-proxy
+repo's `design.md`).
 
 Confirm it's actually ready before continuing — this is more than "is the
 process running," it also covers migrations and CA materialization:

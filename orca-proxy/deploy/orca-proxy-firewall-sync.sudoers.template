@@ -1,16 +1,24 @@
 # orca-proxy firewall-sync sudoers entry (design ticket #12).
 #
 # Grants the unprivileged service user NOPASSWD access to exactly one
-# script — the sudoers-gated helper the Management API shells out to via
-# `sudo -n` on every VM create/delete (firewall.py's FirewallSync). No
-# other command, and no interactive password, is ever needed.
+# script, invoked with exactly one fixed set of arguments — the
+# sudoers-gated helper the Management API shells out to via `sudo -n` on
+# every VM create/delete (firewall.py's FirewallSync / run_reconcile_script,
+# which always calls it with these same --db/--bridge/--proxy-port values
+# for a given install). Pinning the arguments closes off the fact that a
+# bare "NOPASSWD: /path/to/cmd" with no argument list otherwise permits
+# *any* arguments — see firewall.py's _BRIDGE_NAME_RE comment for why an
+# attacker-controlled --bridge would otherwise be a straight
+# shell-injection-to-root primitive.
 #
-# install.sh substitutes __USER__ before writing this to
+# __FIREWALL_BIN__ is a root-owned path outside the target user's home
+# directory (install.sh installs a standalone stdlib-only copy of the
+# script there) — unlike a path resolving into the user's own venv, the
+# target user cannot overwrite what this rule actually executes.
+#
+# install.sh substitutes __USER__/__FIREWALL_BIN__/__DB_PATH__/__BRIDGE__/
+# __PROXY_PORT__ before writing this to
 # /etc/sudoers.d/orca-proxy-firewall-sync (mode 0440, validated with
-# `visudo -c` before being trusted). The path below intentionally goes
-# through the `current` symlink (not a resolved, version-specific path) so
-# upgrades never require rewriting this file — see
-# config.firewall_sync_script_path()'s docstring for why sys.executable
-# would have broken this.
+# `visudo -c` before being trusted).
 
-__USER__ ALL=(root) NOPASSWD: /home/__USER__/.orca-proxy/current/venv/bin/orca-proxy-firewall-sync
+__USER__ ALL=(root) NOPASSWD: __FIREWALL_BIN__ --db __DB_PATH__ --bridge __BRIDGE__ --proxy-port __PROXY_PORT__

@@ -344,19 +344,13 @@ per-VM cleanup in v1.
 
 ## Service installation and firewall-rule lifecycle (#12)
 
-Blue-green deployment:
+Blue-green deployment for the *unprivileged* half:
 - `~/.local/share/orca-proxy/<version>/` — an immutable, versioned,
   `uv sync`-locked install (source copied, not symlinked, so a later working-tree
-  change can't retroactively affect a running version).
+  change can't retroactively affect a running version). Owned by the target
+  user, not root.
 - `~/.orca-proxy/current` — a symlink, the only thing an upgrade repoints.
-  `config.firewall_sync_script_path()` deliberately resolves through this
-  stable symlink path (not `sys.executable`, which resolves through it to a
-  version-specific concrete path) so the sudoers entry never needs updating
-  across upgrades.
 - systemd **user** unit (`%h`-relative paths, no root service), `orca-proxy.service`.
-- A single sudoers `NOPASSWD` entry scoped to exactly one script path
-  (the firewall-sync helper via the stable `current` symlink) — the
-  Management API itself never runs privileged.
 - Firewall reconciliation is triggered synchronously by the Management API
   on every VM create/delete (not a background poller), and once at startup
   against whatever VMs are already registered (so `/readyz` reflects reality
@@ -367,6 +361,41 @@ Blue-green deployment:
   **deferred** for v1 — traced during #13's survey to a reliability edge
   case, not a credential-leak or Block-bypass, which is the bar the
   destination sets for v1 scope.
+
+**The privileged half is deliberately *not* blue-green** — a security fix,
+not a simplification. The original design resolved
+`config.firewall_sync_script_path()` through the stable `~/.orca-proxy/
+current/venv/bin/...` symlink specifically so the sudoers entry would never
+need rewriting across upgrades. That was a real bug: every link in that
+chain (`current`, the `venv` symlink inside it, the script file itself) is
+owned and writable by the same unprivileged user the sudoers `NOPASSWD`
+entry grants root to — trivially self-escalating (overwrite the file,
+`sudo` it, no password, no audit). `install.sh` now installs a **standalone,
+root-owned copy** of just the script's actual dependency closure
+(`db.py`, `firewall.py`, `repo/vms.py` — pure stdlib, per `firewall_sync.py`'s
+own docstring) to `/usr/local/lib/orca-proxy-firewall-sync/`, invoked via
+the system `python3` — never the target user's venv — from
+`/usr/local/sbin/orca-proxy-firewall-sync` (root:root, `go-w` throughout).
+Nothing in the privileged execution path is writable by the account the
+sudoers rule names. The sudoers entry additionally pins the exact
+`--db`/`--bridge`/`--proxy-port` arguments (not just the script path) —
+closing the separate hole where a bare `NOPASSWD: /path/to/cmd` permits
+*any* arguments, which `--bridge` interpolated into a shell string would
+otherwise turn into a straight injection primitive (see `_BRIDGE_NAME_RE`'s
+comment in `firewall.py`).
+
+Consequence: upgrading now genuinely needs a fresh `sudo bash install.sh`
+run — there is no passwordless-sudo path left that could re-provision the
+privileged half on its own, by design. `install.sh` itself must run as
+root (`curl .../install.sh | sudo bash`, or `sudo bash deploy/install.sh`
+against a local checkout); it still builds the venv and manages the
+systemd **user** unit as the target user (`SUDO_USER`, or `ORCA_PROXY_USER`
+to override), only elevating for the two steps that actually need root:
+writing the sudoers file and installing the firewall-sync copy. Changing
+`ORCA_PROXY_BRIDGE`/`ORCA_PROXY_PORT` after install without re-running
+`install.sh` will make the pinned sudoers args stop matching — reconcile
+then fails closed (`sudo -n` denied) rather than silently accepting an
+unpinned value.
 
 ## Web UI (#7, #15)
 

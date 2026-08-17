@@ -3,76 +3,187 @@ set -euo pipefail
 
 # orca-proxy first-time install / upgrade (design ticket #12).
 #
-# Blue-green: builds a fresh versioned install under
-# ~/.local/share/orca-proxy/<version>/, then atomically repoints
-# ~/.orca-proxy/current at it. Never overwrites an existing versioned
-# install in place — a bad upgrade rolls back by repointing `current` back
-# to the previous version and restarting the service, no reinstall needed.
+# Must run as root:
+#   sudo bash deploy/install.sh                     (from an existing checkout)
+#   curl -fsSL https://raw.githubusercontent.com/cau777/skills/main/orca-proxy/deploy/install.sh | sudo bash
 #
-# Run by the Provisioning Agent (orca-ssh-setup) per design ticket #14's Q7:
-# checked first (systemctl --user status orca-proxy.service), only run if
-# absent; the two sudo-requiring steps (sudoers file, iptables chain setup
-# via the firewall-sync script) are attempted automatically and fall back to
-# asking the user to run them if the session can't get a sudo prompt — the
-# same line the current orca-ssh-setup skill already draws for
-# `apt-get install mitmproxy`, not a stricter bar for this app.
+# Why root now, when the old install.sh ran as the target user and only
+# sudo'd two small steps: the firewall-sync helper's sudoers NOPASSWD entry
+# is only safe if nothing in the path it executes is writable by the user
+# that entry names. The old layout resolved through
+# ~/.orca-proxy/current/venv/bin/... — fully writable by that same user,
+# so overwriting it and running `sudo` was a trivial root escalation. The
+# fix installs a standalone copy of the helper to a root-owned location
+# outside the user's home directory entirely, which this script can only do
+# as root. Upgrading is accordingly now a deliberate "run this again as
+# root" action rather than something a passwordless-sudo step does for you
+# — see design.md's "Service installation and firewall-rule lifecycle"
+# section.
+#
+# Everything *unprivileged* (the venv, the systemd --user unit, the data
+# directory) is still built and owned by the target user, not root — this
+# script only elevates for the two things that actually need it: writing
+# the sudoers file, and installing the root-owned firewall-sync copy.
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="$(cd "$REPO_DIR" && git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)"
-INSTALL_DIR="$HOME/.local/share/orca-proxy/$VERSION"
-DATA_DIR="$HOME/.orca-proxy"
-CURRENT_LINK="$DATA_DIR/current"
-UNIT_DIR="$HOME/.config/systemd/user"
-UNIT_PATH="$UNIT_DIR/orca-proxy.service"
+ORCA_PROXY_GIT_URL="${ORCA_PROXY_GIT_URL:-https://github.com/cau777/skills.git}"
 
-if [ -e "$INSTALL_DIR" ]; then
-  echo "!! $INSTALL_DIR already exists — refusing to overwrite an existing versioned install" >&2
+if [ "$(id -u)" -ne 0 ]; then
+  cat >&2 <<'MSG'
+!! orca-proxy's installer must run as root:
+     sudo bash deploy/install.sh
+   or, with no local checkout:
+     curl -fsSL https://raw.githubusercontent.com/cau777/skills/main/orca-proxy/deploy/install.sh | sudo bash
+MSG
   exit 1
 fi
 
-echo "Installing orca-proxy $VERSION to $INSTALL_DIR"
-mkdir -p "$INSTALL_DIR" "$DATA_DIR" "$UNIT_DIR"
+# --- who is this actually for? ---
+# `sudo bash install.sh` sets SUDO_USER to the invoking (non-root) account;
+# `curl ... | sudo bash` does too, since sudo itself sets it regardless of
+# how bash's stdin is fed. ORCA_PROXY_USER overrides for anything that
+# doesn't go through sudo (e.g. already running as root some other way).
+TARGET_USER="${ORCA_PROXY_USER:-${SUDO_USER:-}}"
+if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
+  echo "!! could not determine a non-root target user -- run via 'sudo', or set ORCA_PROXY_USER=<name>" >&2
+  exit 1
+fi
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+if [ -z "$TARGET_HOME" ] || [ ! -d "$TARGET_HOME" ]; then
+  echo "!! $TARGET_USER has no home directory" >&2
+  exit 1
+fi
+TARGET_UID="$(id -u "$TARGET_USER")"
+
+as_user() {
+  # Login shell so PATH/profile-sourced tooling (uv, etc.) resolves the same
+  # way it would if $TARGET_USER ran this themselves; XDG_RUNTIME_DIR is
+  # forced so `systemctl --user` reaches the right session bus even when
+  # invoked from a root shell rather than a real login of that user.
+  sudo -u "$TARGET_USER" -H env XDG_RUNTIME_DIR="/run/user/$TARGET_UID" bash -lc "$1"
+}
+
+CLEANUP_DIR=""
+cleanup() { [ -n "$CLEANUP_DIR" ] && rm -rf "$CLEANUP_DIR"; }
+trap cleanup EXIT
+
+# --- get the source ---
+if [ -n "${ORCA_PROXY_REPO:-}" ]; then
+  REPO_DIR="$ORCA_PROXY_REPO"
+elif [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ] \
+     && [ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/pyproject.toml" ]; then
+  # Invoked as a real file (`sudo bash deploy/install.sh`, not piped) from
+  # inside an actual checkout.
+  REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+else
+  # Piped (`curl ... | sudo bash`) -- BASH_SOURCE isn't a real file in that
+  # mode, so there's no checkout to derive a path from. Fetch a fresh
+  # sparse checkout of just orca-proxy/ instead.
+  echo "No local checkout detected -- fetching orca-proxy from $ORCA_PROXY_GIT_URL"
+  CLEANUP_DIR="$(mktemp -d)"
+  git clone --quiet --depth 1 --filter=blob:none --sparse "$ORCA_PROXY_GIT_URL" "$CLEANUP_DIR/skills"
+  git -C "$CLEANUP_DIR/skills" sparse-checkout set orca-proxy
+  REPO_DIR="$CLEANUP_DIR/skills/orca-proxy"
+fi
+
+VERSION="$(cd "$REPO_DIR" && git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)"
+INSTALL_DIR="$TARGET_HOME/.local/share/orca-proxy/$VERSION"
+DATA_DIR="$TARGET_HOME/.orca-proxy"
+CURRENT_LINK="$DATA_DIR/current"
+UNIT_DIR="$TARGET_HOME/.config/systemd/user"
+UNIT_PATH="$UNIT_DIR/orca-proxy.service"
+
+if [ -e "$INSTALL_DIR" ]; then
+  echo "!! $INSTALL_DIR already exists -- refusing to overwrite an existing versioned install" >&2
+  exit 1
+fi
+
+echo "Installing orca-proxy $VERSION to $INSTALL_DIR (for $TARGET_USER)"
+install -d -o "$TARGET_USER" -g "$TARGET_USER" "$INSTALL_DIR" "$DATA_DIR" "$UNIT_DIR"
 
 # Copy the source tree rather than symlinking it — a versioned install must
 # stay immutable even if the working checkout later moves to a new commit.
 cp -r "$REPO_DIR"/. "$INSTALL_DIR/source"
-( cd "$INSTALL_DIR/source" && uv sync --no-dev )
+chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
+as_user "cd $(printf '%q' "$INSTALL_DIR/source") && uv sync --no-dev"
 ln -sfn "$INSTALL_DIR/source/.venv" "$INSTALL_DIR/venv"
+chown -h "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR/venv"
 
 # Stable, version-independent path for the systemd unit's `-s` argument —
 # proxy_addon.py's real location inside site-packages varies by Python
 # version, so it's copied to one fixed spot per versioned install instead.
 cp "$INSTALL_DIR/source/src/orca_proxy/proxy_addon.py" "$INSTALL_DIR/proxy_addon.py"
+chown "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR/proxy_addon.py"
 
 echo "Writing systemd user unit"
-cp "$REPO_DIR/deploy/orca-proxy.service" "$UNIT_PATH"
+install -o "$TARGET_USER" -g "$TARGET_USER" -m 0644 "$REPO_DIR/deploy/orca-proxy.service" "$UNIT_PATH"
+
+echo "Installing the privileged firewall-sync helper (root-owned, outside $TARGET_USER's home)"
+# Only this script's actual dependency closure -- db.py, firewall.py,
+# repo/vms.py are pure stdlib (see firewall_sync.py's own docstring) -- so
+# it runs against the system python3, never the target user's venv. That's
+# the point: nothing the sudoers rule executes is writable by the user it
+# grants NOPASSWD root to.
+FIREWALL_LIB_DIR="/usr/local/lib/orca-proxy-firewall-sync"
+FIREWALL_BIN="/usr/local/sbin/orca-proxy-firewall-sync"
+rm -rf "$FIREWALL_LIB_DIR"
+install -d -m 0755 \
+  "$FIREWALL_LIB_DIR/orca_proxy/cli" \
+  "$FIREWALL_LIB_DIR/orca_proxy/repo"
+: > "$FIREWALL_LIB_DIR/orca_proxy/__init__.py"
+: > "$FIREWALL_LIB_DIR/orca_proxy/cli/__init__.py"
+install -m 0644 \
+  "$REPO_DIR/src/orca_proxy/db.py" \
+  "$REPO_DIR/src/orca_proxy/firewall.py" \
+  "$FIREWALL_LIB_DIR/orca_proxy/"
+install -m 0644 \
+  "$REPO_DIR/src/orca_proxy/repo/__init__.py" \
+  "$REPO_DIR/src/orca_proxy/repo/vms.py" \
+  "$FIREWALL_LIB_DIR/orca_proxy/repo/"
+install -m 0644 "$REPO_DIR/src/orca_proxy/cli/firewall_sync.py" "$FIREWALL_LIB_DIR/orca_proxy/cli/"
+cat > "$FIREWALL_BIN" <<PYEOF
+#!/usr/bin/python3
+import sys
+sys.path.insert(0, "$FIREWALL_LIB_DIR")
+from orca_proxy.cli.firewall_sync import main
+sys.exit(main())
+PYEOF
+chown -R root:root "$FIREWALL_LIB_DIR" "$FIREWALL_BIN"
+chmod -R go-w "$FIREWALL_LIB_DIR"
+chmod 0755 "$FIREWALL_BIN"
 
 echo "Configuring sudoers for the firewall-sync helper"
+ORCA_PROXY_BRIDGE_VALUE="${ORCA_PROXY_BRIDGE:-mpqemubr0}"
+ORCA_PROXY_PORT_VALUE="${ORCA_PROXY_PORT:-8443}"
+DB_PATH="$DATA_DIR/state.sqlite"
 SUDOERS_PATH="/etc/sudoers.d/orca-proxy-firewall-sync"
-SUDOERS_CONTENT="$(sed "s/__USER__/$USER/g" "$REPO_DIR/deploy/orca-proxy-firewall-sync.sudoers.template")"
-if command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
-  echo "$SUDOERS_CONTENT" | sudo -n tee "$SUDOERS_PATH" >/dev/null
-  sudo -n chmod 0440 "$SUDOERS_PATH"
-  sudo -n visudo -c -f "$SUDOERS_PATH"
-else
-  echo "!! Could not get a passwordless sudo prompt — run this yourself:" >&2
-  echo "     echo '$SUDOERS_CONTENT' | sudo tee $SUDOERS_PATH && sudo chmod 0440 $SUDOERS_PATH" >&2
-fi
+SUDOERS_CONTENT="$(sed \
+  -e "s|__USER__|$TARGET_USER|g" \
+  -e "s|__FIREWALL_BIN__|$FIREWALL_BIN|g" \
+  -e "s|__DB_PATH__|$DB_PATH|g" \
+  -e "s|__BRIDGE__|$ORCA_PROXY_BRIDGE_VALUE|g" \
+  -e "s|__PROXY_PORT__|$ORCA_PROXY_PORT_VALUE|g" \
+  "$REPO_DIR/deploy/orca-proxy-firewall-sync.sudoers.template")"
+echo "$SUDOERS_CONTENT" > "$SUDOERS_PATH"
+chmod 0440 "$SUDOERS_PATH"
+visudo -c -f "$SUDOERS_PATH"
 
 # Atomic repoint — the only step that changes what "current" (and therefore
-# the systemd unit and sudoers entry) actually points at.
+# the systemd unit) actually points at. No longer sudoers-relevant: the
+# firewall-sync helper lives outside this symlink chain entirely now.
 ln -sfn "$INSTALL_DIR" "$CURRENT_LINK"
+chown -h "$TARGET_USER:$TARGET_USER" "$CURRENT_LINK"
 
 echo "Starting orca-proxy.service"
-systemctl --user daemon-reload
-systemctl --user enable --now orca-proxy.service
-loginctl enable-linger "$USER" || echo "!! run manually: sudo loginctl enable-linger $USER" >&2
+loginctl enable-linger "$TARGET_USER"
+systemctl start "user@$TARGET_UID.service" 2>/dev/null || true
+as_user "systemctl --user daemon-reload && systemctl --user enable --now orca-proxy.service"
 
 sleep 2
-systemctl --user is-active --quiet orca-proxy.service || {
-  systemctl --user status orca-proxy.service --no-pager --lines=20
-  echo "orca-proxy failed to start — resolve before continuing" >&2
+as_user "systemctl --user is-active --quiet orca-proxy.service" || {
+  as_user "systemctl --user status orca-proxy.service --no-pager --lines=20" || true
+  echo "orca-proxy failed to start -- resolve before continuing" >&2
   exit 1
 }
 
 echo "orca-proxy $VERSION installed and running (current -> $INSTALL_DIR)"
+echo "Privileged firewall-sync helper: $FIREWALL_BIN (root-owned, sudoers-gated for $TARGET_USER)"

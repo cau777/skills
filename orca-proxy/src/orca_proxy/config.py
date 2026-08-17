@@ -36,20 +36,27 @@ def management_api_port() -> int:
 
 
 def firewall_sync_script_path() -> Path:
-    """Absolute path to the installed console-script entry point (#12) —
-    the sudoers NOPASSWD entry names this exact path, so it must stay
-    stable across upgrades. Deliberately built from the `current` symlink
-    (~/.orca-proxy/current/venv/bin/...) rather than sys.executable — the
-    running interpreter's own path resolves through the symlink to a
-    version-specific target, which would change on every blue-green upgrade
-    and require a fresh sudoers entry each time, defeating the point of the
-    symlink. install.sh's layout (deploy/install.sh) is the source of truth
-    this mirrors.
+    """Absolute path to the sudoers-gated helper (#12) — the sudoers
+    NOPASSWD entry names this exact path.
+
+    Deliberately a fixed, root-owned location (/usr/local/sbin/...), NOT
+    anything under the unprivileged user's home directory (an earlier
+    version resolved through ~/.orca-proxy/current/venv/bin/..., which is
+    fully writable by the same user the sudoers entry grants NOPASSWD
+    root to — trivially self-escalating: overwrite the file the symlink
+    chain resolves to, then `sudo` it, no password required). install.sh
+    installs a standalone copy of just this script's stdlib-only
+    dependency closure (db.py, firewall.py, repo/vms.py — see
+    firewall_sync.py's own docstring on why that's pure stdlib) to
+    /usr/local/lib/orca-proxy-firewall-sync/, invoked via the system
+    python3, so nothing in the privileged execution path is writable by
+    the account the sudoers entry names. install.sh's layout is the
+    source of truth this mirrors.
     """
     raw = os.environ.get("ORCA_PROXY_FIREWALL_SCRIPT")
     if raw:
         return Path(raw)
-    return data_dir() / "current" / "venv" / "bin" / "orca-proxy-firewall-sync"
+    return Path("/usr/local/sbin/orca-proxy-firewall-sync")
 
 
 def mitm_confdir() -> Path:
