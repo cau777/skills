@@ -70,7 +70,7 @@ class OrcaProxyAddon:
     async def running(self) -> None:
         # Fires once mitmproxy's own proxy server is up — this is where the
         # embedded Management API starts, on the same already-running loop.
-        self._api_runner = web.AppRunner(create_app())
+        self._api_runner = web.AppRunner(create_app(credential_cache=self._credentials))
         await self._api_runner.setup()
         site = web.TCPSite(self._api_runner, "127.0.0.1", config.management_api_port())
         await site.start()

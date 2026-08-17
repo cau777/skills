@@ -323,6 +323,13 @@ async def test_running_embeds_the_management_api_on_the_same_loop(tmp_path, monk
     try:
         await a.running()
 
+        # The embedded Management API must observe/act on the same
+        # CredentialCache the interception path (self._credentials) actually
+        # executes commands against -- two separate instances would mean
+        # GET /api/v1/credentials/{name} never reflects real proxy-path
+        # usage, and a PUT's cache invalidation would be a no-op there.
+        assert a._api_runner.app["credential_cache"] is a._credentials
+
         import aiohttp
 
         async with aiohttp.ClientSession() as session:

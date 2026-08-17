@@ -15,12 +15,20 @@ from .handlers import vms as vm_handlers
 from .repo import vms as vms_repo
 
 
-def create_app() -> web.Application:
+def create_app(credential_cache: CredentialCache | None = None) -> web.Application:
     """Build the aiohttp application.
 
     Decoupled from any specific entrypoint — a later slice starts this from
     within the mitmproxy addon's own asyncio loop instead of a standalone
     web.run_app(), per the design spec's language/stack decision (#4).
+
+    `credential_cache` lets the caller share one `CredentialCache` instance
+    with another component in the same process (the mitmdump addon, per
+    proxy_addon.py's `running()`) — the Management API's credential status
+    endpoint and PUT-triggered cache invalidation are only meaningful if
+    they observe/act on the same in-memory state the interception path
+    actually executes commands against. Defaults to a fresh instance for
+    standalone use (`__main__.py`, tests).
     """
     app = web.Application(middlewares=[error_middleware])
 
@@ -33,7 +41,7 @@ def create_app() -> web.Application:
     ca.materialize(ca_row, config.ca_cert_path())
     app["ca_materialized"] = True
 
-    app["credential_cache"] = CredentialCache()
+    app["credential_cache"] = credential_cache if credential_cache is not None else CredentialCache()
 
     requests_conn = request_log.connect(config.requests_db_path())
     app["request_log"] = request_log.RequestLog(requests_conn)
