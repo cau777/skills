@@ -45,13 +45,11 @@ def firewall_sync_script_path() -> Path:
     fully writable by the same user the sudoers entry grants NOPASSWD
     root to — trivially self-escalating: overwrite the file the symlink
     chain resolves to, then `sudo` it, no password required). install.sh
-    installs a standalone copy of just this script's stdlib-only
-    dependency closure (db.py, firewall.py, repo/vms.py — see
-    firewall_sync.py's own docstring on why that's pure stdlib) to
-    /usr/local/lib/orca-proxy-firewall-sync/, invoked via the system
-    python3, so nothing in the privileged execution path is writable by
-    the account the sudoers entry names. install.sh's layout is the
-    source of truth this mirrors.
+    copies deploy/orca-proxy-firewall-sync here verbatim — a single,
+    dependency-free, stdlib-only file (see its own module docstring),
+    run via the system python3, never the target user's venv — so nothing
+    in the privileged execution path is writable by the account the
+    sudoers entry names.
     """
     raw = os.environ.get("ORCA_PROXY_FIREWALL_SCRIPT")
     if raw:

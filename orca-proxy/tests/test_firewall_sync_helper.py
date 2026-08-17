@@ -1,0 +1,175 @@
+"""Tests for deploy/orca-proxy-firewall-sync -- the single, dependency-free,
+root-owned script (design ticket #12) that is the entire privileged attack
+surface in orca-proxy. It's not part of the `orca_proxy` package (deliberately
+-- see its own module docstring for why), so it's loaded here directly from
+its real path via importlib, the same file install.sh copies verbatim to
+/usr/local/sbin/orca-proxy-firewall-sync. This is what's actually under test,
+not a hand-maintained copy of it.
+"""
+
+import importlib.machinery
+import importlib.util
+import json
+import sqlite3
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+HELPER_PATH = Path(__file__).parent.parent / "deploy" / "orca-proxy-firewall-sync"
+
+
+def _load_helper():
+    # No .py suffix (it's installed verbatim as an executable, not imported
+    # as a package member) -- spec_from_file_location can't infer a loader
+    # from the extension, so one is supplied explicitly.
+    loader = importlib.machinery.SourceFileLoader("orca_proxy_firewall_sync_helper", str(HELPER_PATH))
+    spec = importlib.util.spec_from_file_location("orca_proxy_firewall_sync_helper", HELPER_PATH, loader=loader)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+helper = _load_helper()
+
+
+def _make_db(tmp_path, vms: list[tuple[str, str]] = ()):
+    db_path = tmp_path / "state.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE vms (name TEXT PRIMARY KEY, ip_address TEXT NOT NULL, "
+        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+    )
+    for name, ip in vms:
+        conn.execute(
+            "INSERT INTO vms (name, ip_address, created_at, updated_at) VALUES (?, ?, '', '')",
+            (name, ip),
+        )
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+class FakeRunner:
+    def __init__(self, fail_on: set[int] | None = None):
+        self.calls: list[list[str]] = []
+        self._fail_on = fail_on or set()
+
+    def __call__(self, command, **kwargs):
+        self.calls.append(command)
+        returncode = 1 if len(self.calls) - 1 in self._fail_on else 0
+        return SimpleNamespace(returncode=returncode, stdout="", stderr="boom" if returncode else "")
+
+
+# --- build_commands (pure) ---
+
+
+def test_build_commands_creates_and_flushes_both_chains():
+    commands = helper.build_commands([], "mpqemubr0", 8443)
+    joined = [" ".join(c) if c[0] != "sh" else c[-1] for c in commands]
+    assert any(f"-t nat -N {helper.NAT_CHAIN}" in s for s in joined)
+    assert any(f"-N {helper.FILTER_CHAIN}" in s and "-t nat" not in s for s in joined)
+    assert ["iptables", "-t", "nat", "-F", helper.NAT_CHAIN] in commands
+    assert ["iptables", "-F", helper.FILTER_CHAIN] in commands
+
+
+def test_build_commands_chain_create_tolerates_already_exists():
+    """iptables -N exits 1 if the chain already exists — true on every
+    reconcile after the first VM registration. reconcile() treats any
+    non-zero exit as fatal, so the -N commands must never fail on their
+    own; a real bug had this abort the whole rebuild before the -F flush.
+    """
+    commands = helper.build_commands([], "mpqemubr0", 8443)
+    create_commands = [c for c in commands if c[0] == "sh" and "-N" in c[-1]]
+    assert len(create_commands) == 2
+    for c in create_commands:
+        assert "|| true" in c[-1]
+
+
+def test_build_commands_rejects_unsafe_bridge_name():
+    with pytest.raises(ValueError):
+        helper.build_commands([], "eth0; id > /tmp/pwned; #", 8443)
+
+
+def test_build_commands_one_vm_gets_redirect_and_drop_for_both_ports():
+    commands = helper.build_commands([("skills-dev", "10.14.105.22")], "mpqemubr0", 8443)
+    nat_rules = [c for c in commands if c[:4] == ["iptables", "-t", "nat", "-A"]]
+    filter_rules = [c for c in commands if c[:3] == ["iptables", "-A", helper.FILTER_CHAIN]]
+    assert len(nat_rules) == 2  # 80 and 443
+    assert len(filter_rules) == 2
+    assert all("-s" in c and "10.14.105.22" in c for c in nat_rules)
+    assert all("REDIRECT" in c and "8443" in c for c in nat_rules)
+    assert all("DROP" in c for c in filter_rules)
+
+
+def test_build_commands_multiple_vms_each_get_their_own_rules():
+    commands = helper.build_commands([("vm-a", "10.0.0.1"), ("vm-b", "10.0.0.2")], "mpqemubr0", 8443)
+    nat_rules = [c for c in commands if c[:4] == ["iptables", "-t", "nat", "-A"]]
+    assert len(nat_rules) == 4  # 2 VMs x 2 ports
+
+
+def test_build_commands_hooks_chains_via_idempotent_check_then_add():
+    commands = helper.build_commands([], "mpqemubr0", 8443)
+    joined = [" ".join(c) if isinstance(c, list) and c[0] != "sh" else c[-1] for c in commands]
+    assert any("PREROUTING" in s and helper.NAT_CHAIN in s for s in joined)
+    assert any("FORWARD" in s and helper.FILTER_CHAIN in s and "-I FORWARD 1" in s for s in joined)
+
+
+# --- reconcile (execution, fake runner) ---
+
+
+def test_reconcile_reports_in_sync_when_every_command_succeeds():
+    runner = FakeRunner()
+    status = helper.reconcile([("vm-a", "10.0.0.1")], "mpqemubr0", 8443, runner=runner)
+    assert status == {"vm-a": "in_sync"}
+    assert len(runner.calls) > 0
+
+
+def test_reconcile_reports_error_for_every_vm_when_any_command_fails():
+    runner = FakeRunner(fail_on={0})  # fail the very first command
+    status = helper.reconcile([("vm-a", "10.0.0.1"), ("vm-b", "10.0.0.2")], "mpqemubr0", 8443, runner=runner)
+    assert status == {"vm-a": "error", "vm-b": "error"}
+
+
+def test_reconcile_stops_running_commands_after_first_failure():
+    runner = FakeRunner(fail_on={0})
+    helper.reconcile([("vm-a", "10.0.0.1")], "mpqemubr0", 8443, runner=runner)
+    total_commands = len(helper.build_commands([("vm-a", "10.0.0.1")], "mpqemubr0", 8443))
+    assert len(runner.calls) == 1 < total_commands
+
+
+# --- _list_vms / main (db + argv integration) ---
+
+
+def test_list_vms_reads_name_and_ip_ordered(tmp_path):
+    db_path = _make_db(tmp_path, [("vm-b", "10.0.0.2"), ("vm-a", "10.0.0.1")])
+    conn = helper._connect_db(db_path)
+    assert helper._list_vms(conn) == [("vm-a", "10.0.0.1"), ("vm-b", "10.0.0.2")]
+
+
+def _ok_runner(command, **kwargs):
+    return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+def test_main_prints_json_status_and_returns_zero(tmp_path, capsys):
+    db_path = _make_db(tmp_path, [("skills-dev", "10.14.105.22")])
+    exit_code = helper.main(["--db", str(db_path), "--bridge", "mpqemubr0", "--proxy-port", "8443"], runner=_ok_runner)
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == {"skills-dev": "in_sync"}
+
+
+def test_main_returns_nonzero_on_failure(tmp_path, capsys):
+    db_path = _make_db(tmp_path, [("skills-dev", "10.14.105.22")])
+
+    def failing_runner(command, **kwargs):
+        return SimpleNamespace(returncode=1, stdout="", stderr="permission denied")
+
+    exit_code = helper.main(["--db", str(db_path), "--bridge", "mpqemubr0", "--proxy-port", "8443"], runner=failing_runner)
+    assert exit_code == 1
+
+
+def test_main_with_no_vms_still_prints_valid_json(tmp_path, capsys):
+    db_path = _make_db(tmp_path)
+    exit_code = helper.main(["--db", str(db_path), "--bridge", "mpqemubr0", "--proxy-port", "8443"], runner=_ok_runner)
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == {}

@@ -1,126 +1,20 @@
-"""Per-VM DNAT reconciliation (design ticket #12).
+"""Unprivileged side of per-VM DNAT reconciliation (design ticket #12).
 
-Split deliberately into a pure command-generation half (`build_commands`,
-fully unit-testable without root or a real iptables) and a thin execution
-half (`reconcile`, `run_reconcile_script`) that shells out — this is the
-sudoers-gated helper script's actual logic, invoked synchronously by the
-Management API on every VM create/delete per #12's resolution.
-
-Two dedicated chains, fully rebuilt (flushed + repopulated) on every call —
-never incrementally patched, matching the idempotent-full-replace pattern
-used everywhere else on this map:
-
-- `ORCA_PROXY_NAT` (nat table, jumped to from PREROUTING): REDIRECTs each
-  registered VM's 80/443 to the local proxy port.
-- `ORCA_PROXY_FILTER` (filter table, jumped to from FORWARD): DROPs the same
-  VM/port combinations. This is the fail-closed baseline from #12's Q5 — if
-  the NAT redirect is ever missing (a startup race, a reconciliation
-  failure), a registered VM's 80/443 traffic is blocked rather than
-  reaching the internet unenforced, instead of silently bypassing
-  enforcement. Once a NAT rule successfully redirects a packet to the local
-  proxy, it takes the INPUT path, not FORWARD, so this DROP rule is inert
-  for correctly-redirected traffic and only fires when redirection failed.
+The actual iptables logic (`build_commands`/`reconcile`) lives entirely in
+`deploy/orca-proxy-firewall-sync` now, not here — that script is the only
+thing that ever runs with root, and is installed as a single,
+dependency-free, root-owned file specifically so nothing in its execution
+path is writable by the unprivileged account the sudoers NOPASSWD entry
+names. This module is what the Management API (never root) actually calls:
+shell out to that sudoers-gated helper via `sudo -n` and parse its JSON
+stdout.
 """
 
 import asyncio
 import json
-import re
 import subprocess
 from functools import partial
 from pathlib import Path
-
-NAT_CHAIN = "ORCA_PROXY_NAT"
-FILTER_CHAIN = "ORCA_PROXY_FILTER"
-
-# Linux interface names: IFNAMSIZ is 16 bytes including the NUL, so 15
-# usable characters; no shell metacharacters permitted. `bridge` reaches
-# this module from the sudoers-gated helper's own --bridge argv (an
-# operator-controlled but *unvalidated* string until this check), and gets
-# interpolated into `sh -c` strings below — an unvalidated value here is a
-# straight shell-injection-to-root primitive, since the sudoers entry only
-# restricts the script path, not its arguments.
-_BRIDGE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
-
-
-def build_commands(vms: list[tuple[str, str]], bridge: str, proxy_port: int) -> list[list[str]]:
-    """Return the full, idempotent sequence of iptables argv commands.
-
-    `vms` is a list of (name, ip_address) pairs — only the IPs matter here,
-    names are accepted for readability/logging by callers.
-    """
-    if not _BRIDGE_NAME_RE.match(bridge):
-        raise ValueError(f"invalid bridge interface name: {bridge!r}")
-
-    commands: list[list[str]] = [
-        # Dedicated chains: create-if-absent via `sh -c ... || true` (a
-        # bare `iptables -N` exits 1 if the chain already exists — true on
-        # every reconcile after the first — which reconcile() would treat
-        # as a fatal abort before ever reaching the -F flush or per-VM
-        # rules below), then flush unconditionally — this is what makes
-        # the whole thing an idempotent full rebuild rather than an
-        # incremental patch.
-        ["sh", "-c", f"iptables -t nat -N {NAT_CHAIN} 2>/dev/null || true"],
-        ["iptables", "-t", "nat", "-F", NAT_CHAIN],
-        ["sh", "-c", f"iptables -N {FILTER_CHAIN} 2>/dev/null || true"],
-        ["iptables", "-F", FILTER_CHAIN],
-    ]
-
-    for _name, ip in vms:
-        for port in (80, 443):
-            commands.append(
-                [
-                    "iptables", "-t", "nat", "-A", NAT_CHAIN,
-                    "-s", ip, "-p", "tcp", "--dport", str(port),
-                    "-j", "REDIRECT", "--to-port", str(proxy_port),
-                ]
-            )
-            commands.append(
-                [
-                    "iptables", "-A", FILTER_CHAIN,
-                    "-s", ip, "-p", "tcp", "--dport", str(port), "-j", "DROP",
-                ]
-            )
-
-    # Hook the chains in, once — -C checks whether the jump rule already
-    # exists (idempotent: skip the -I if so). The FORWARD jump uses -I
-    # (insert at position 1) so it's evaluated before Multipass's own
-    # bridge ACCEPT rules; the PREROUTING jump position doesn't carry the
-    # same risk since REDIRECT only ever narrows traffic, never widens it.
-    commands.append(
-        [
-            "sh", "-c",
-            f"iptables -t nat -C PREROUTING -i {bridge} -j {NAT_CHAIN} 2>/dev/null || "
-            f"iptables -t nat -A PREROUTING -i {bridge} -j {NAT_CHAIN}",
-        ]
-    )
-    commands.append(
-        [
-            "sh", "-c",
-            f"iptables -C FORWARD -i {bridge} -j {FILTER_CHAIN} 2>/dev/null || "
-            f"iptables -I FORWARD 1 -i {bridge} -j {FILTER_CHAIN}",
-        ]
-    )
-
-    return commands
-
-
-def reconcile(
-    vms: list[tuple[str, str]], bridge: str, proxy_port: int, runner=subprocess.run
-) -> dict[str, str]:
-    """Run build_commands()'s sequence, returning a per-VM status map.
-
-    Status is "in_sync" for every VM if every command succeeds, or "error"
-    for every VM if any command fails (the chains are rebuilt as one unit —
-    a partial failure leaves the whole rebuild's success ambiguous per VM,
-    so this errs toward reporting all of them as unsynced rather than
-    guessing which specific rule failed).
-    """
-    commands = build_commands(vms, bridge, proxy_port)
-    for command in commands:
-        result = runner(command, capture_output=True, text=True)
-        if result.returncode != 0:
-            return {name: "error" for name, _ in vms}
-    return {name: "in_sync" for name, _ in vms}
 
 
 def run_reconcile_script(
@@ -128,8 +22,8 @@ def run_reconcile_script(
 ) -> dict[str, str]:
     """What the aiohttp process actually calls: invoke the sudoers-gated
     helper script as a subprocess and parse its JSON stdout. Kept separate
-    from `reconcile()` so the Management API side never needs its own
-    passwordless-root — only the one auditable script does.
+    from the helper script itself so the Management API side never needs
+    its own passwordless-root — only the one auditable script does.
     """
     result = runner(
         [

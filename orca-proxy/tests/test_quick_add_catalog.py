@@ -29,7 +29,7 @@ def _load_catalog() -> list[dict]:
 
 def _console_script_names() -> set[str]:
     data = tomllib.loads(PYPROJECT_PATH.read_text())
-    return set(data["project"]["scripts"].keys())
+    return set(data["project"].get("scripts", {}).keys())
 
 
 def test_catalog_is_a_nonempty_list_of_objects():

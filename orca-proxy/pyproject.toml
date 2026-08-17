@@ -9,9 +9,6 @@ dependencies = [
     "mitmproxy>=10,<11",
 ]
 
-[project.scripts]
-orca-proxy-firewall-sync = "orca_proxy.cli.firewall_sync:main"
-
 [dependency-groups]
 dev = [
     "pytest>=8",

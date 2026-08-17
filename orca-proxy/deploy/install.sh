@@ -118,38 +118,13 @@ echo "Writing systemd user unit"
 install -o "$TARGET_USER" -g "$TARGET_USER" -m 0644 "$REPO_DIR/deploy/orca-proxy.service" "$UNIT_PATH"
 
 echo "Installing the privileged firewall-sync helper (root-owned, outside $TARGET_USER's home)"
-# Only this script's actual dependency closure -- db.py, firewall.py,
-# repo/vms.py are pure stdlib (see firewall_sync.py's own docstring) -- so
-# it runs against the system python3, never the target user's venv. That's
-# the point: nothing the sudoers rule executes is writable by the user it
-# grants NOPASSWD root to.
-FIREWALL_LIB_DIR="/usr/local/lib/orca-proxy-firewall-sync"
+# A single, dependency-free, stdlib-only file (see its own module
+# docstring) -- copied verbatim, not built/bundled from anything, and run
+# against the system python3, never the target user's venv. That's the
+# point: nothing the sudoers rule executes is writable by the user it
+# grants NOPASSWD root to, and there's exactly one file to audit.
 FIREWALL_BIN="/usr/local/sbin/orca-proxy-firewall-sync"
-rm -rf "$FIREWALL_LIB_DIR"
-install -d -m 0755 \
-  "$FIREWALL_LIB_DIR/orca_proxy/cli" \
-  "$FIREWALL_LIB_DIR/orca_proxy/repo"
-: > "$FIREWALL_LIB_DIR/orca_proxy/__init__.py"
-: > "$FIREWALL_LIB_DIR/orca_proxy/cli/__init__.py"
-install -m 0644 \
-  "$REPO_DIR/src/orca_proxy/db.py" \
-  "$REPO_DIR/src/orca_proxy/firewall.py" \
-  "$FIREWALL_LIB_DIR/orca_proxy/"
-install -m 0644 \
-  "$REPO_DIR/src/orca_proxy/repo/__init__.py" \
-  "$REPO_DIR/src/orca_proxy/repo/vms.py" \
-  "$FIREWALL_LIB_DIR/orca_proxy/repo/"
-install -m 0644 "$REPO_DIR/src/orca_proxy/cli/firewall_sync.py" "$FIREWALL_LIB_DIR/orca_proxy/cli/"
-cat > "$FIREWALL_BIN" <<PYEOF
-#!/usr/bin/python3
-import sys
-sys.path.insert(0, "$FIREWALL_LIB_DIR")
-from orca_proxy.cli.firewall_sync import main
-sys.exit(main())
-PYEOF
-chown -R root:root "$FIREWALL_LIB_DIR" "$FIREWALL_BIN"
-chmod -R go-w "$FIREWALL_LIB_DIR"
-chmod 0755 "$FIREWALL_BIN"
+install -o root -g root -m 0755 "$REPO_DIR/deploy/orca-proxy-firewall-sync" "$FIREWALL_BIN"
 
 echo "Configuring sudoers for the firewall-sync helper"
 ORCA_PROXY_BRIDGE_VALUE="${ORCA_PROXY_BRIDGE:-mpqemubr0}"

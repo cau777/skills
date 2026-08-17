@@ -1,0 +1,178 @@
+#!/usr/bin/python3
+"""orca-proxy's privileged firewall-sync helper (design ticket #12).
+
+This is the ONLY thing that ever runs with root privileges anywhere in
+orca-proxy, and it is installed verbatim (byte-for-byte, `install -m 0755`,
+no build/bundle step) to /usr/local/sbin/orca-proxy-firewall-sync,
+root:root, no group/other write bit -- see install.sh and the sudoers
+template it writes. Deliberately a single, dependency-free, stdlib-only
+file rather than a package spread across multiple modules: the whole point
+of the sudoers NOPASSWD entry naming this exact path is that nothing it
+executes may be writable by the unprivileged account it's granted to, and a
+single flat file sitting in a root-owned location, with zero imports
+outside the standard library, is the smallest and most auditable thing that
+can satisfy that -- `cat` this one file and you've reviewed the entire
+privileged attack surface.
+
+Not imported by, and does not import from, the `orca_proxy` package --
+that package lives in the target user's own venv, which this script must
+never touch or depend on. (A prior version resolved the sudoers path
+through that venv via a stable symlink specifically so upgrades wouldn't
+need a fresh sudoers entry; that was the bug -- every link in the chain was
+writable by the same user the NOPASSWD grant named, so overwriting the
+script and running `sudo` on it was a zero-effort root escalation. See
+design.md's "Service installation and firewall-rule lifecycle" section.)
+The functions below are intentionally small enough that duplicating this
+logic instead of importing it costs far less than the alternative (a
+dependency on anything mutable by the grantee).
+
+Deliberately narrow: read the VM table, rebuild two iptables chains, print
+a JSON per-VM status map to stdout.
+
+Two dedicated chains, fully rebuilt (flushed + repopulated) on every call --
+never incrementally patched:
+
+- ORCA_PROXY_NAT (nat table, jumped to from PREROUTING): REDIRECTs each
+  registered VM's 80/443 to the local proxy port.
+- ORCA_PROXY_FILTER (filter table, jumped to from FORWARD): DROPs the same
+  VM/port combinations -- the fail-closed baseline: if the NAT redirect is
+  ever missing (a startup race, a reconciliation failure), a registered
+  VM's 80/443 traffic is blocked rather than reaching the internet
+  unenforced. Once a NAT rule successfully redirects a packet, it takes the
+  INPUT path, not FORWARD, so this DROP rule is inert for correctly
+  redirected traffic and only fires when redirection failed.
+"""
+
+import argparse
+import json
+import re
+import sqlite3
+import subprocess
+import sys
+from pathlib import Path
+
+NAT_CHAIN = "ORCA_PROXY_NAT"
+FILTER_CHAIN = "ORCA_PROXY_FILTER"
+
+# Linux interface names: IFNAMSIZ is 16 bytes including the NUL, so 15
+# usable characters; no shell metacharacters permitted. `bridge` reaches
+# this module from argv (operator-controlled but *unvalidated* until this
+# check) and gets interpolated into `sh -c` strings below -- an unvalidated
+# value here is a straight shell-injection-to-root primitive. (The
+# installed sudoers entry additionally pins the exact --bridge value it
+# will invoke this script with, as a second, independent layer -- this
+# check stands on its own regardless.)
+_BRIDGE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
+
+
+def _connect_db(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path, isolation_level=None)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _list_vms(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    rows = conn.execute("SELECT name, ip_address FROM vms ORDER BY name").fetchall()
+    return [(row["name"], row["ip_address"]) for row in rows]
+
+
+def build_commands(vms: list[tuple[str, str]], bridge: str, proxy_port: int) -> list[list[str]]:
+    """Return the full, idempotent sequence of iptables argv commands.
+
+    `vms` is a list of (name, ip_address) pairs -- only the IPs matter here,
+    names are accepted for readability/logging by callers.
+    """
+    if not _BRIDGE_NAME_RE.match(bridge):
+        raise ValueError(f"invalid bridge interface name: {bridge!r}")
+
+    commands: list[list[str]] = [
+        # Create-if-absent via `sh -c ... || true` (a bare `iptables -N`
+        # exits 1 if the chain already exists -- true on every reconcile
+        # after the first -- which reconcile() would treat as a fatal
+        # abort before ever reaching the -F flush or per-VM rules below),
+        # then flush unconditionally -- this is what makes the whole thing
+        # an idempotent full rebuild rather than an incremental patch.
+        ["sh", "-c", f"iptables -t nat -N {NAT_CHAIN} 2>/dev/null || true"],
+        ["iptables", "-t", "nat", "-F", NAT_CHAIN],
+        ["sh", "-c", f"iptables -N {FILTER_CHAIN} 2>/dev/null || true"],
+        ["iptables", "-F", FILTER_CHAIN],
+    ]
+
+    for _name, ip in vms:
+        for port in (80, 443):
+            commands.append(
+                [
+                    "iptables", "-t", "nat", "-A", NAT_CHAIN,
+                    "-s", ip, "-p", "tcp", "--dport", str(port),
+                    "-j", "REDIRECT", "--to-port", str(proxy_port),
+                ]
+            )
+            commands.append(
+                [
+                    "iptables", "-A", FILTER_CHAIN,
+                    "-s", ip, "-p", "tcp", "--dport", str(port), "-j", "DROP",
+                ]
+            )
+
+    # Hook the chains in, once -- -C checks whether the jump rule already
+    # exists (idempotent: skip the -I if so). The FORWARD jump uses -I
+    # (insert at position 1) so it's evaluated before Multipass's own
+    # bridge ACCEPT rules; the PREROUTING jump position doesn't carry the
+    # same risk since REDIRECT only ever narrows traffic, never widens it.
+    commands.append(
+        [
+            "sh", "-c",
+            f"iptables -t nat -C PREROUTING -i {bridge} -j {NAT_CHAIN} 2>/dev/null || "
+            f"iptables -t nat -A PREROUTING -i {bridge} -j {NAT_CHAIN}",
+        ]
+    )
+    commands.append(
+        [
+            "sh", "-c",
+            f"iptables -C FORWARD -i {bridge} -j {FILTER_CHAIN} 2>/dev/null || "
+            f"iptables -I FORWARD 1 -i {bridge} -j {FILTER_CHAIN}",
+        ]
+    )
+
+    return commands
+
+
+def reconcile(
+    vms: list[tuple[str, str]], bridge: str, proxy_port: int, runner=subprocess.run
+) -> dict[str, str]:
+    """Run build_commands()'s sequence, returning a per-VM status map.
+
+    Status is "in_sync" for every VM if every command succeeds, or "error"
+    for every VM if any command fails (the chains are rebuilt as one unit --
+    a partial failure leaves the whole rebuild's success ambiguous per VM,
+    so this errs toward reporting all of them as unsynced rather than
+    guessing which specific rule failed).
+    """
+    commands = build_commands(vms, bridge, proxy_port)
+    for command in commands:
+        result = runner(command, capture_output=True, text=True)
+        if result.returncode != 0:
+            return {name: "error" for name, _ in vms}
+    return {name: "in_sync" for name, _ in vms}
+
+
+def main(argv: list[str] | None = None, runner=subprocess.run) -> int:
+    parser = argparse.ArgumentParser(description="Rebuild orca-proxy's per-VM DNAT/DROP rules")
+    parser.add_argument("--db", required=True, type=Path, help="path to state.sqlite")
+    parser.add_argument("--bridge", required=True, help="Multipass bridge interface, e.g. mpqemubr0")
+    parser.add_argument("--proxy-port", required=True, type=int)
+    args = parser.parse_args(argv)
+
+    conn = _connect_db(args.db)
+    vms = _list_vms(conn)
+    conn.close()
+
+    status = reconcile(vms, args.bridge, args.proxy_port, runner=runner)
+    print(json.dumps(status))
+    return 0 if all(v == "in_sync" for v in status.values()) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

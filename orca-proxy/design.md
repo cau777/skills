@@ -370,19 +370,28 @@ need rewriting across upgrades. That was a real bug: every link in that
 chain (`current`, the `venv` symlink inside it, the script file itself) is
 owned and writable by the same unprivileged user the sudoers `NOPASSWD`
 entry grants root to — trivially self-escalating (overwrite the file,
-`sudo` it, no password, no audit). `install.sh` now installs a **standalone,
-root-owned copy** of just the script's actual dependency closure
-(`db.py`, `firewall.py`, `repo/vms.py` — pure stdlib, per `firewall_sync.py`'s
-own docstring) to `/usr/local/lib/orca-proxy-firewall-sync/`, invoked via
-the system `python3` — never the target user's venv — from
-`/usr/local/sbin/orca-proxy-firewall-sync` (root:root, `go-w` throughout).
-Nothing in the privileged execution path is writable by the account the
-sudoers rule names. The sudoers entry additionally pins the exact
-`--db`/`--bridge`/`--proxy-port` arguments (not just the script path) —
-closing the separate hole where a bare `NOPASSWD: /path/to/cmd` permits
-*any* arguments, which `--bridge` interpolated into a shell string would
-otherwise turn into a straight injection primitive (see `_BRIDGE_NAME_RE`'s
-comment in `firewall.py`).
+`sudo` it, no password, no audit). `install.sh` now copies
+`deploy/orca-proxy-firewall-sync` — a **single, dependency-free,
+stdlib-only file**, not a package — verbatim to
+`/usr/local/sbin/orca-proxy-firewall-sync` (root:root, `go-w` cleared),
+run via the system `python3`, never the target user's venv. It carries its
+own copy of the small amount of logic it actually needs (`build_commands`,
+`reconcile`, a two-line sqlite connect/query) rather than importing
+`orca_proxy.db`/`orca_proxy.firewall`/`orca_proxy.repo.vms` — those live in
+the target user's venv, and importing from there would just reintroduce
+the same writable-dependency problem one hop away. The duplication cost is
+deliberately accepted: a handful of small, stable functions copied once is
+cheaper than a dependency on anything mutable by the account the sudoers
+rule names. `firewall.py` (in the regular package) keeps only the
+unprivileged half — `FirewallSync`/`run_reconcile_script`, which shells out
+to this script via `sudo -n` and never runs `build_commands`/`reconcile`
+itself. Nothing in the privileged execution path is writable by the
+account the sudoers rule names. The sudoers entry additionally pins the
+exact `--db`/`--bridge`/`--proxy-port` arguments (not just the script
+path) — closing the separate hole where a bare `NOPASSWD: /path/to/cmd`
+permits *any* arguments, which `--bridge` interpolated into a shell string
+would otherwise turn into a straight injection primitive (see
+`deploy/orca-proxy-firewall-sync`'s `_BRIDGE_NAME_RE` comment).
 
 Consequence: upgrading now genuinely needs a fresh `sudo bash install.sh`
 run — there is no passwordless-sudo path left that could re-provision the
