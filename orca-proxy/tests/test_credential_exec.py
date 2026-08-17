@@ -156,6 +156,28 @@ async def test_invalidate_kills_inflight_and_discards_its_result():
     assert cache.get_status("c")["status"] == "empty"
 
 
+async def test_cancelling_the_owning_caller_does_not_deadlock_followers():
+    """A non-CredentialExecutionError raised out of _execute (most
+    realistically asyncio.CancelledError from a client disconnect) must
+    still clear state.inflight and resolve the shared future — otherwise
+    every other caller single-flighted onto the same in-flight execution
+    (`await asyncio.shield(state.inflight)`) hangs forever.
+    """
+    cache = CredentialCache()
+    owner = asyncio.create_task(cache.get_value("c", "sleep 1 && echo x", ttl_seconds=60))
+    await asyncio.sleep(0.05)
+    follower = asyncio.create_task(cache.get_value("c", "sleep 1 && echo x", ttl_seconds=60))
+    await asyncio.sleep(0.05)
+
+    owner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+
+    # The follower must fail fast with a real error, not hang indefinitely.
+    with pytest.raises(CredentialExecutionError):
+        await asyncio.wait_for(follower, timeout=1)
+
+
 async def test_drop_removes_state_entirely():
     cache = CredentialCache()
     await cache.get_value("c", "echo hello", ttl_seconds=60)

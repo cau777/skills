@@ -87,7 +87,14 @@ def main(auth_file: Path | None = None, urlopen=urllib.request.urlopen) -> int:
     auth["tokens"]["refresh_token"] = new_refresh_token
     auth["tokens"]["access_token"] = access_token
     tmp_path = auth_file.with_suffix(".json.tmp")
+    # Path.write_text() creates the tmp file at umask-default perms
+    # (typically 0o644 — world-readable) and Path.replace() carries that
+    # mode straight through to the target, silently downgrading this OAuth
+    # credential file from the CLI's own 0o600 on every refresh (every
+    # refresh, unconditionally, since Codex refresh tokens are single-use).
+    original_mode = auth_file.stat().st_mode  # already confirmed to exist, above
     tmp_path.write_text(json.dumps(auth, indent=2))
+    tmp_path.chmod(original_mode)
     tmp_path.replace(auth_file)
 
     print(access_token)

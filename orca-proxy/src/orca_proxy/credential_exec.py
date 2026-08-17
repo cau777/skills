@@ -102,6 +102,23 @@ class CredentialCache:
                 future.set_exception(exc)
                 future.exception()  # mark retrieved so an unawaited future doesn't warn
             raise
+        except BaseException as exc:
+            # Anything else — most realistically asyncio.CancelledError from
+            # a cancelled caller (e.g. a disconnected HTTP client), but also
+            # FileNotFoundError/OSError from a broken subprocess launch —
+            # must still clear state.inflight and resolve the future.
+            # Without this, every concurrent/future single-flight caller for
+            # this Credential (`await asyncio.shield(state.inflight)` above)
+            # hangs forever on a future nothing will ever resolve.
+            state.status = "error"
+            state.last_failure_at = time.time()
+            state.failure_category = "exit"
+            state.inflight = None
+            if not future.done():
+                wrapped = CredentialExecutionError("exit", f"execution failed: {exc!r}")
+                future.set_exception(wrapped)
+                future.exception()  # mark retrieved so an unawaited future doesn't warn
+            raise
         else:
             # ttl_seconds == 0 disables caching entirely (#10) — leave
             # state.value unset so the next call always re-executes, rather

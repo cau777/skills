@@ -6,6 +6,22 @@ import pytest
 from orca_proxy.cli import refresh_claude, refresh_codex
 
 
+class FakeGzipResponse:
+    """Simulates what urllib actually hands back when Cloudflare honors an
+    Accept-Encoding: gzip request and urllib does no decompression itself —
+    raw gzip bytes, not the JSON payload.
+    """
+
+    def read(self):
+        return b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03not-real-gzip-but-not-json-either"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 class FakeResponse:
     def __init__(self, body: dict):
         self._body = json.dumps(body).encode()
@@ -166,3 +182,45 @@ def test_claude_main_missing_refresh_token_fails_without_network_call(tmp_path, 
     exit_code = refresh_claude.main(credentials_file, urlopen=exploding_urlopen)
     assert exit_code == 1
     assert "refreshToken missing" in capsys.readouterr().err
+
+
+def test_claude_refresh_does_not_advertise_compressed_encodings():
+    # urllib performs no Content-Encoding decompression — advertising
+    # gzip/br and having Cloudflare honor it breaks json.loads() on every
+    # refresh. See test_claude_main_handles_undecodable_response below for
+    # the failure mode this specifically prevents.
+    assert "Accept-Encoding" not in refresh_claude.HEADERS
+
+
+def test_claude_main_handles_undecodable_response_without_crashing(tmp_path, capsys):
+    credentials_file = tmp_path / ".credentials.json"
+    credentials_file.write_text(json.dumps({"claudeAiOauth": {"refreshToken": "old-refresh"}}))
+
+    def urlopen(request, timeout=None):
+        return FakeGzipResponse()
+
+    exit_code = refresh_claude.main(credentials_file, urlopen=urlopen)
+    assert exit_code == 1
+    assert "refresh failed" in capsys.readouterr().err
+
+
+def test_claude_main_preserves_original_file_permissions(tmp_path):
+    credentials_file = tmp_path / ".credentials.json"
+    credentials_file.write_text(json.dumps({"claudeAiOauth": {"refreshToken": "old-refresh"}}))
+    credentials_file.chmod(0o600)
+
+    claude_body = {"access_token": "new-access", "refresh_token": "new-refresh"}
+    refresh_claude.main(credentials_file, urlopen=_fake_urlopen(claude_body, {}))
+
+    assert oct(credentials_file.stat().st_mode)[-3:] == "600"
+
+
+def test_codex_main_preserves_original_file_permissions(tmp_path):
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text(json.dumps({"tokens": {"refresh_token": "old-refresh"}}))
+    auth_file.chmod(0o600)
+
+    codex_body = {"access_token": "new-access", "refresh_token": "new-refresh"}
+    refresh_codex.main(auth_file, urlopen=_fake_urlopen(codex_body, {}))
+
+    assert oct(auth_file.stat().st_mode)[-3:] == "600"

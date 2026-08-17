@@ -22,12 +22,24 @@ used everywhere else on this map:
   for correctly-redirected traffic and only fires when redirection failed.
 """
 
+import asyncio
 import json
+import re
 import subprocess
+from functools import partial
 from pathlib import Path
 
 NAT_CHAIN = "ORCA_PROXY_NAT"
 FILTER_CHAIN = "ORCA_PROXY_FILTER"
+
+# Linux interface names: IFNAMSIZ is 16 bytes including the NUL, so 15
+# usable characters; no shell metacharacters permitted. `bridge` reaches
+# this module from the sudoers-gated helper's own --bridge argv (an
+# operator-controlled but *unvalidated* string until this check), and gets
+# interpolated into `sh -c` strings below — an unvalidated value here is a
+# straight shell-injection-to-root primitive, since the sudoers entry only
+# restricts the script path, not its arguments.
+_BRIDGE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
 
 
 def build_commands(vms: list[tuple[str, str]], bridge: str, proxy_port: int) -> list[list[str]]:
@@ -36,13 +48,20 @@ def build_commands(vms: list[tuple[str, str]], bridge: str, proxy_port: int) -> 
     `vms` is a list of (name, ip_address) pairs — only the IPs matter here,
     names are accepted for readability/logging by callers.
     """
+    if not _BRIDGE_NAME_RE.match(bridge):
+        raise ValueError(f"invalid bridge interface name: {bridge!r}")
+
     commands: list[list[str]] = [
-        # Dedicated chains: create if absent (ignore failure if they already
-        # exist), then flush unconditionally — this is what makes the whole
-        # thing an idempotent full rebuild rather than an incremental patch.
-        ["iptables", "-t", "nat", "-N", NAT_CHAIN],
+        # Dedicated chains: create-if-absent via `sh -c ... || true` (a
+        # bare `iptables -N` exits 1 if the chain already exists — true on
+        # every reconcile after the first — which reconcile() would treat
+        # as a fatal abort before ever reaching the -F flush or per-VM
+        # rules below), then flush unconditionally — this is what makes
+        # the whole thing an idempotent full rebuild rather than an
+        # incremental patch.
+        ["sh", "-c", f"iptables -t nat -N {NAT_CHAIN} 2>/dev/null || true"],
         ["iptables", "-t", "nat", "-F", NAT_CHAIN],
-        ["iptables", "-N", FILTER_CHAIN],
+        ["sh", "-c", f"iptables -N {FILTER_CHAIN} 2>/dev/null || true"],
         ["iptables", "-F", FILTER_CHAIN],
     ]
 
@@ -143,17 +162,32 @@ class FirewallSync:
         self._proxy_port = proxy_port
         self._runner = runner
         self._status: dict[str, str] = {}
+        # Tracks whether this process has ever asked the script to populate
+        # the chains — NOT whether any VM is registered right now. Needed
+        # to distinguish "fresh install, chains never touched, nothing to
+        # flush" (safe to skip — avoids requiring sudo to be configured
+        # before the first VM is ever registered) from "we just deleted the
+        # last VM" (the chains still hold that VM's REDIRECT/DROP rules
+        # from the last real reconcile and MUST be flushed, or they persist
+        # indefinitely and can later match an unrelated VM that's recycled
+        # the same DHCP-leased IP).
+        self._ever_reconciled_nonzero = False
 
     def reconcile(self, vm_count: int | None = None) -> dict[str, str]:
-        """`vm_count`, when given, skips invoking the privileged script
-        entirely once it's zero — there's nothing to reconcile, and no
-        reason to shell out to sudo for a rebuild of empty chains. Callers
-        that don't have a cheap count handy can omit it; the script itself
-        is idempotent either way.
+        """`vm_count`, when given, skips invoking the privileged script only
+        on a fresh install with zero VMs ever registered this process —
+        there's nothing to reconcile, and no reason to shell out to sudo for
+        a rebuild of empty chains. Once any reconcile has populated the
+        chains, a later zero-VM call (e.g. deleting the last registered VM)
+        always runs the script, since skipping it would leave that VM's
+        rules stale in the kernel. Callers that don't have a cheap count
+        handy can omit it; the script itself is idempotent either way.
         """
-        if vm_count == 0:
+        if vm_count == 0 and not self._ever_reconciled_nonzero:
             self._status = {}
             return self._status
+        if vm_count:
+            self._ever_reconciled_nonzero = True
         try:
             self._status = run_reconcile_script(
                 self._script_path, self._db_path, self._bridge, self._proxy_port, runner=self._runner
@@ -161,6 +195,21 @@ class FirewallSync:
         except Exception as exc:  # never let a firewall-sync failure break a VM CRUD response
             self._status = {"__error__": str(exc)}
         return self._status
+
+    async def reconcile_async(self, vm_count: int | None = None) -> dict[str, str]:
+        """Same as reconcile(), but off the calling event loop.
+
+        `reconcile()` shells out via a blocking `subprocess.run(sudo ...)`
+        call — fine for app.py's one startup call (runs before the loop is
+        serving anything), but fatal for the Management API's per-VM
+        create/delete handlers, which run embedded on mitmdump's own
+        asyncio loop (#4's "same process" decision): a blocking call there
+        freezes every in-flight TLS handshake and proxied request on the
+        data plane for the duration of the sudo+iptables round-trip. Offload
+        to a thread via run_in_executor so the loop stays responsive.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, partial(self.reconcile, vm_count))
 
     @property
     def status(self) -> dict[str, str]:

@@ -143,6 +143,14 @@ class OrcaProxyAddon:
         client.orca_connection_id = connection_id
         client.orca_vm_name = vm_name
         client.orca_connect_started = time.monotonic()
+        # Per-request matching (request(), below) must key off *this* value,
+        # not the client-supplied Host header — otherwise a VM can open a
+        # TLS connection whose SNI matches one Allow-with-credential rule
+        # then send an HTTP request with a different Host, causing that
+        # request to match a *different* rule while still riding the first
+        # rule's already-established upstream TLS session — leaking that
+        # second rule's credential to the first rule's real upstream host.
+        client.orca_sni = sni if sni_present else None
 
         if decision.intercepted:
             return  # proceed with normal certificate-swap MITM
@@ -172,7 +180,14 @@ class OrcaProxyAddon:
     async def request(self, flow: http.HTTPFlow) -> None:
         client = flow.client_conn
         vm_name = getattr(client, "orca_vm_name", None) or ""
-        hostname = flow.request.pretty_host
+        # Use the SNI that authorized interception at tls_clienthello time,
+        # not flow.request.pretty_host (the client-supplied Host header) —
+        # the latter is attacker-controlled and can diverge from the SNI on
+        # an already-intercepted connection, letting one rule's credential
+        # get sent to a different rule's real upstream host. Only an
+        # SNI-less connection (already collapsed to default-Allow at the
+        # connection level, so never actually intercepted) falls back.
+        hostname = getattr(client, "orca_sni", None) or flow.request.pretty_host
         raw_path = flow.request.path
         path = urlparse(raw_path).path
         query_keys = [k for k, _ in parse_qsl(urlparse(raw_path).query)]

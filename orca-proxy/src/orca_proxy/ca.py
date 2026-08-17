@@ -1,4 +1,5 @@
 import datetime
+import os
 import sqlite3
 from pathlib import Path
 
@@ -75,8 +76,18 @@ def ensure_generated(conn: sqlite3.Connection) -> sqlite3.Row:
 
 
 def materialize(row: sqlite3.Row, path: Path) -> None:
-    """Atomically write the combined cert+key PEM to the given path."""
+    """Atomically write the combined cert+key PEM to the given path.
+
+    Opens the tmp file with mode 0o600 from creation (os.open, not
+    Path.write_text) so the private key is never briefly readable at the
+    umask-default mode a plain open()+chmod() sequence would leave it at.
+    """
     tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(row["certificate_pem"] + row["private_key_pem"])
-    tmp_path.chmod(0o600)
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(row["certificate_pem"] + row["private_key_pem"])
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
     tmp_path.replace(path)

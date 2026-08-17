@@ -133,7 +133,13 @@ def evaluate_request(rules: list[dict], vm_name: str, hostname: str, path: str) 
 
         normalized_path = normalize_path(path)
         prefix = action["path_prefix"]
-        matches = normalized_path == prefix or normalized_path.startswith(prefix + "/")
+        # "/" is a segment boundary by definition — every absolute path is
+        # a descendant of the root — so it must match everything, not just
+        # a literal "/". Without this special case, `prefix + "/"` becomes
+        # "//", which no real request path starts with, so a "/" prefix
+        # (the Web UI's own default for new rules) would silently match
+        # nothing but the bare root.
+        matches = prefix == "/" or normalized_path == prefix or normalized_path.startswith(prefix + "/")
         if matches:
             trace.append(
                 TraceEntry(

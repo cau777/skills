@@ -329,7 +329,13 @@ http_requests(id, connection_id REFERENCES connections(id) ON DELETE CASCADE,
 
 One ten-year self-signed root, generated once, stored in `state.sqlite`
 (not a separate keystore) and materialized to
-`{ORCA_PROXY_HOME}/mitmproxy-ca-cert.pem`. `GET /api/v1/ca` returns only the
+`{ORCA_PROXY_HOME}/mitm-confdir/mitmproxy-ca.pem` — that exact path and
+filename matter: it's mitmproxy's own `CertStore` lookup location
+(`--set confdir=...`, basename `mitmproxy`), so mitmdump loads *this* CA to
+sign intercepted connections instead of silently auto-generating an
+unrelated one on first run (a real bug caught in ultrareview and fixed —
+every intercepted handshake failed cert validation until this path matched
+exactly). `GET /api/v1/ca` returns only the
 public certificate PEM, SHA-256 fingerprint, subject, and validity dates —
 never the private key. The Provisioning Agent installs and verifies the
 public root into each VM's system trust store at registration time (see

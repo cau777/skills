@@ -39,12 +39,16 @@ def default_credentials_file() -> Path:
 
 # Mimics the real client's headers (research: applyClaudeOAuthAxiosHeaders) —
 # the application-layer half of that mimicry; see the module docstring for
-# the TLS-fingerprint half this does NOT attempt.
+# the TLS-fingerprint half this does NOT attempt. Deliberately omits
+# Accept-Encoding: Python's stdlib urllib does no Content-Encoding
+# decompression at all, so advertising gzip/br (as the real Axios client
+# does) and then having Cloudflare honor it means json.loads() gets raw
+# compressed bytes and fails every time — refresh_codex.py already omits
+# it for the same reason.
 HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Content-Type": "application/json",
     "User-Agent": "axios/1.15.2",
-    "Accept-Encoding": "gzip, compress, deflate, br",
     "Connection": "close",
 }
 
@@ -83,6 +87,12 @@ def main(credentials_file: Path | None = None, urlopen=urllib.request.urlopen) -
     except urllib.error.URLError as exc:
         print(f"refresh failed: {exc}", file=sys.stderr)
         return 1
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        # Belt-and-braces: a future header/response change (e.g. Cloudflare
+        # deciding to compress regardless of Accept-Encoding) shouldn't be
+        # able to turn into an uncaught traceback here.
+        print(f"refresh failed: could not parse response as JSON: {exc}", file=sys.stderr)
+        return 1
 
     access_token = token_response.get("access_token")
     if not access_token:
@@ -99,7 +109,15 @@ def main(credentials_file: Path | None = None, urlopen=urllib.request.urlopen) -
     # file shape) — see refresh_codex.py's identical caveat for access_token.
     credentials["claudeAiOauth"]["accessToken"] = access_token
     tmp_path = credentials_file.with_suffix(".json.tmp")
+    # Path.write_text() creates the tmp file at umask-default perms
+    # (typically 0o644 — world-readable) and Path.replace() carries that
+    # mode straight through to the target, silently downgrading this OAuth
+    # credential file from the CLI's own 0o600 on every refresh. Preserve
+    # the original file's mode explicitly rather than relying on the tmp
+    # file's default.
+    original_mode = credentials_file.stat().st_mode  # already confirmed to exist, above
     tmp_path.write_text(json.dumps(credentials, indent=2))
+    tmp_path.chmod(original_mode)
     tmp_path.replace(credentials_file)
 
     print(access_token)

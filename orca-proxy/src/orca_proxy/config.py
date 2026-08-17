@@ -52,5 +52,27 @@ def firewall_sync_script_path() -> Path:
     return data_dir() / "current" / "venv" / "bin" / "orca-proxy-firewall-sync"
 
 
+def mitm_confdir() -> Path:
+    """mitmproxy's own --set confdir path (deploy/orca-proxy.service) — a
+    subdirectory of data_dir(), not data_dir() itself, so ca_cert_path()
+    can materialize into the exact spot mitmproxy's CertStore looks for its
+    signing CA.
+    """
+    path = data_dir() / "mitm-confdir"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def ca_cert_path() -> Path:
-    return data_dir() / "mitmproxy-ca-cert.pem"
+    """Where the combined CA cert+key PEM is materialized.
+
+    Must be <confdir>/mitmproxy-ca.pem exactly — mitmproxy's own
+    CertStore.from_store() (basename="mitmproxy", mitmproxy's
+    CONF_BASENAME) looks for precisely that filename inside --set confdir.
+    Get this wrong (e.g. a different filename or directory) and mitmdump
+    silently auto-generates its own unrelated CA on first run instead of
+    loading this one — every intercepted handshake then fails cert
+    validation inside the VM, since the Provisioning Agent installs *this*
+    CA into the VM's trust store, not mitmproxy's auto-generated one.
+    """
+    return mitm_confdir() / "mitmproxy-ca.pem"

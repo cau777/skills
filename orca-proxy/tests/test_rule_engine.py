@@ -177,6 +177,21 @@ def test_trace_records_every_selected_rule_in_priority_order():
     assert decision.trace[1].result == "matched_terminal"
 
 
+def test_root_path_prefix_matches_every_path():
+    # "/" is the Web UI's own default for a new rule's path_prefix — it
+    # must match every request path, not just a literal "GET /".
+    rules = [_awc("r1", 10, "api.github.com", "gh", "/")]
+    decision = evaluate_request(rules, "skills-dev", "api.github.com", "/repos/cau777/issues")
+    assert decision.outcome == ALLOW_CREDENTIAL
+    assert decision.matched_rule == "r1"
+
+
+def test_root_path_prefix_matches_bare_root_too():
+    rules = [_awc("r1", 10, "api.github.com", "gh", "/")]
+    decision = evaluate_request(rules, "skills-dev", "api.github.com", "/")
+    assert decision.outcome == ALLOW_CREDENTIAL
+
+
 def test_no_matching_rules_defaults_allow():
     decision = evaluate_request([], "skills-dev", "github.com", "/anything")
     assert decision.outcome == ALLOW_DEFAULT

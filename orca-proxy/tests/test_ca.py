@@ -14,7 +14,9 @@ async def test_get_ca_returns_public_material_only(client, app):
 
 async def test_ca_materialized_to_data_dir(client, app):
     data_dir = Path(app["db"].execute("PRAGMA database_list").fetchone()["file"]).parent
-    ca_path = data_dir / "mitmproxy-ca-cert.pem"
+    # Must match mitmproxy's own CertStore lookup exactly (confdir/mitmproxy-ca.pem)
+    # or mitmdump silently signs with a different, auto-generated CA.
+    ca_path = data_dir / "mitm-confdir" / "mitmproxy-ca.pem"
     assert ca_path.exists()
     contents = ca_path.read_text()
     assert "BEGIN CERTIFICATE" in contents

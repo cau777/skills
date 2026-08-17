@@ -18,10 +18,34 @@ class FakeRunner:
 
 def test_build_commands_creates_and_flushes_both_chains():
     commands = build_commands([], "mpqemubr0", 8443)
-    assert ["iptables", "-t", "nat", "-N", NAT_CHAIN] in commands
+    joined = [" ".join(c) if c[0] != "sh" else c[-1] for c in commands]
+    # -N is tolerant-of-already-exists (sh -c ... || true) so a rebuild
+    # after the first VM registration doesn't abort before the -F flush —
+    # see test_build_commands_chain_create_tolerates_already_exists.
+    assert any(f"-t nat -N {NAT_CHAIN}" in s for s in joined)
+    assert any(f"-N {FILTER_CHAIN}" in s and "-t nat" not in s for s in joined)
     assert ["iptables", "-t", "nat", "-F", NAT_CHAIN] in commands
-    assert ["iptables", "-N", FILTER_CHAIN] in commands
     assert ["iptables", "-F", FILTER_CHAIN] in commands
+
+
+def test_build_commands_chain_create_tolerates_already_exists():
+    """iptables -N exits 1 if the chain already exists — true on every
+    reconcile after the first VM registration. reconcile() treats any
+    non-zero exit as fatal, so the -N commands must never fail on their
+    own; a real bug had this abort the whole rebuild before the -F flush.
+    """
+    commands = build_commands([], "mpqemubr0", 8443)
+    create_commands = [c for c in commands if c[0] == "sh" and "-N" in c[-1]]
+    assert len(create_commands) == 2
+    for c in create_commands:
+        assert "|| true" in c[-1]
+
+
+def test_build_commands_rejects_unsafe_bridge_name():
+    import pytest
+
+    with pytest.raises(ValueError):
+        build_commands([], "eth0; id > /tmp/pwned; #", 8443)
 
 
 def test_build_commands_one_vm_gets_redirect_and_drop_for_both_ports():
@@ -133,6 +157,20 @@ def test_firewall_sync_never_raises_even_if_runner_throws():
     status = sync.reconcile(vm_count=1)
     assert "__error__" in status
     assert sync.is_synced is False
+
+
+def test_firewall_sync_flushes_on_delete_to_zero_after_having_had_vms():
+    """Deleting the last registered VM must still run the script — skipping
+    it leaves that VM's REDIRECT/DROP rules stale in the kernel, which can
+    later match an unrelated VM that recycles the same IP.
+    """
+    runner = FakeScriptRunner(stdout="{}")
+    sync = FirewallSync("/path/to/script", "/path/to/db", "mpqemubr0", 8443, runner=runner)
+    sync.reconcile(vm_count=1)
+    assert len(runner.calls) == 1
+    sync.reconcile(vm_count=0)
+    assert len(runner.calls) == 2  # script actually ran the second time too
+    assert sync.status == {}
 
 
 def test_firewall_sync_invokes_sudo_n_with_the_named_script_path():

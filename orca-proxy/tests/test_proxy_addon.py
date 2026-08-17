@@ -212,6 +212,44 @@ async def test_request_non_matching_path_forwarded_without_credential(addon):
     assert flow.response is None
 
 
+async def test_request_matching_keys_off_sni_not_spoofable_host_header(addon):
+    """A connection is intercepted because its SNI matched an
+    Allow-with-credential rule for api.github.com. If the VM then sends an
+    HTTP request over that same session claiming `Host: api.openai.com`,
+    matching must still use the SNI that authorized interception — not the
+    attacker-controlled Host header — or the OpenAI credential could get
+    injected and forwarded to the real api.github.com upstream.
+    """
+    _put_vm(addon)
+    _put_credential(addon, name="gh", command="echo github-secret")
+    _put_credential(addon, name="openai", command="echo openai-secret")
+    _put_rule(
+        addon, "inject-gh", 10, "api.github.com",
+        {"type": "allow_with_credential", "credential": "gh", "path_prefix": "/repos/cau777",
+         "injection": {"type": "bearer"}},
+    )
+    _put_rule(
+        addon, "inject-openai", 20, "api.openai.com",
+        {"type": "allow_with_credential", "credential": "openai", "path_prefix": "/v1",
+         "injection": {"type": "bearer"}},
+    )
+    # SNI = api.github.com authorizes interception.
+    data = _client_hello_data(addon, sni="api.github.com")
+    addon.tls_clienthello(data)
+    assert data.context.client.orca_sni == "api.github.com"
+
+    # Same session, but the request's Host header claims a different host —
+    # what a compromised VM controls freely.
+    flow = _flow_for(addon, data.context.client, path="/v1/models", host="api.openai.com")
+    await addon.request(flow)
+
+    # Must NOT inject the OpenAI credential — SNI (api.github.com) has no
+    # matching path_prefix at /v1/models, so this falls through to
+    # default-Allow rather than leaking a different rule's credential to
+    # the real (github) upstream this connection is actually talking to.
+    assert "Authorization" not in flow.request.headers
+
+
 async def test_intercepted_connection_still_blocked_by_lower_priority_rule(addon):
     _put_vm(addon)
     _put_credential(addon)
