@@ -385,13 +385,16 @@ Served as static files by the same aiohttp process as the Management API
   (`tests/test_quick_add_catalog.py`) — not a new API endpoint, and not
   duplicated data. Contains the three known-working Credential command
   templates: `gh auth token` (GitHub), and pure-bash (curl + jq)
-  reimplementations of the `orca-proxy-refresh-claude` /
-  `orca-proxy-refresh-codex` OAuth-refresh logic for Claude/Codex — inlined
-  rather than shelling out to those console scripts, so a Credential command
-  has no dependency on the venv's `bin/` being on `PATH` (nothing puts it
-  there). The console scripts themselves still exist and are still tested
-  (`tests/test_refresh_scripts.py`) as the readable reference implementation
-  the bash was transcribed from; Quick Add just doesn't call them.
+  implementations of the OAuth-refresh logic for Claude/Codex (wire format
+  below). A Credential command is a plain bash string handed to `bash -lc`
+  (`credential_exec.py`) — it must never depend on anything beyond what a
+  bare VM/host shell already has (curl, jq), so there is no packaged
+  console-script or venv `bin/`-on-`PATH` dependency to keep working across
+  installs/upgrades. `tests/test_refresh_scripts.py` runs the catalog's
+  actual command strings (loaded from the same JSON, not a duplicated copy)
+  through the real `CredentialCache` execution path against a stubbed
+  `curl`, so the catalog itself — the thing that actually ships — is what's
+  under test.
 - No URL-based routing — in-memory view state, matching the prototype.
 - Logs view refresh is a manual button, not polling.
 
@@ -409,11 +412,13 @@ Confirmed from CLIProxyAPI's open-source implementation (reference only —
 - Access-token TTL is not assumed from source — always read live from each
   response's `expires_in`.
 
-Both `orca-proxy-refresh-claude`/`orca-proxy-refresh-codex` console scripts
-print only the access token to stdout on success (the Credential Value) and
-nothing on failure (so a failed refresh becomes `CredentialExecutionError`'s
-`exit` category, not a false success), rewriting only the confirmed/plausibly-inferred
-keys in each tool's local credentials file and preserving everything else.
+Both Quick Add commands print only the access token to stdout on success
+(the Credential Value) and nothing on failure (`set -euo pipefail` plus an
+explicit exit on any missing/invalid response field — so a failed refresh
+becomes `CredentialExecutionError`'s `exit` category, not a false success),
+rewriting only the confirmed/plausibly-inferred keys in each tool's local
+credentials file via `jq` and preserving everything else, including the
+file's original permission bits.
 
 ## Claude Code / Codex CLI placeholder-auth mechanism (#16, #17)
 
