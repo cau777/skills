@@ -1,0 +1,35 @@
+name: Release Jetty
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build and publish release assets
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(tr -d '[:space:]' < VERSION)" = "$TAG"
+          bundle="jetty-${TAG}.tar.gz"
+          git archive --format=tar.gz --prefix="jetty-${TAG}/" -o "$bundle" "$TAG"
+          sha256sum "$bundle" > "$bundle.sha256"
+          sed "s/^JETTY_RELEASE_VERSION=\"\"/JETTY_RELEASE_VERSION=\"${TAG}\"/" \
+            install.sh > jetty-install.sh
+          chmod +x jetty-install.sh
+          gh release create "$TAG" \
+            --verify-tag \
+            --title "Jetty $TAG" \
+            --generate-notes \
+            "$bundle" "$bundle.sha256" jetty-install.sh

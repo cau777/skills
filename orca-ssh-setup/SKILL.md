@@ -126,11 +126,18 @@ exists for any reason). Installing/upgrading orca-proxy is a deliberate,
 human-authorized action, full stop — hand the user the exact command and
 wait for them to run it themselves:
 
+The installed Jetty skill includes a version file. Read it and direct the user
+to the matching persisted release source — never a checkout's `main` branch or
+a mutable raw-GitHub URL:
+
 ```bash
-ORCA_PROXY_REPO=<path to a checkout of the orca-proxy source>
-echo "Need one-time root access to install orca-proxy — please run:" >&2
-echo "  sudo bash $ORCA_PROXY_REPO/deploy/install.sh" >&2
+JETTY_RELEASE_DIR="$HOME/.local/share/jetty/releases/v1.0.0"
+echo "Need one-time root access to install the matching orca-proxy — please run:" >&2
+echo "  sudo env ORCA_PROXY_VERSION=$(basename "$JETTY_RELEASE_DIR") bash $JETTY_RELEASE_DIR/orca-proxy/deploy/install.sh" >&2
 ```
+
+If the skill was installed by another method and that directory is absent, ask
+the user to install a Jetty release first; do not substitute an unpinned source.
 
 Everything *unprivileged* (the venv, the systemd **user** unit, the data
 directory) still ends up owned by and running as the invoking user, not

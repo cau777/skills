@@ -85,7 +85,7 @@ else
   REPO_DIR="$CLEANUP_DIR/skills/orca-proxy"
 fi
 
-VERSION="$(cd "$REPO_DIR" && git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)"
+VERSION="${ORCA_PROXY_VERSION:-$(cd "$REPO_DIR" && git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)}"
 INSTALL_DIR="$TARGET_HOME/.local/share/orca-proxy/$VERSION"
 DATA_DIR="$TARGET_HOME/.orca-proxy"
 CURRENT_LINK="$DATA_DIR/current"

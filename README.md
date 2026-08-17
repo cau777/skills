@@ -38,15 +38,27 @@ traffic is passed through without credentials.
 
 ## Use it
 
-Install the skill once on the machine where you use Codex or Claude Code:
+Install the latest stable release, including its matching agent skill:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cau777/jetty-vm/main/install.sh | bash
+curl -fsSL https://github.com/cau777/jetty-vm/releases/latest/download/jetty-install.sh | bash
 ```
 
-The installer places Jetty's skill in both `~/.codex/skills` and
-`~/.claude/skills`. To install from a clone instead, run `./install.sh` at the
-repository root.
+For a reproducible installation, substitute an exact release tag:
+
+```bash
+curl -fsSL https://github.com/cau777/jetty-vm/releases/download/v1.0.0/jetty-install.sh | bash
+```
+
+The bootstrap verifies and keeps the matching Jetty source under
+`~/.local/share/jetty/releases/<version>/`, then uses `npx skills` to install
+`orca-ssh-setup` into your detected agents. To install the matching proxy in
+the same user-initiated command, add `--with-proxy`; it will request your sudo
+password:
+
+```bash
+curl -fsSL https://github.com/cau777/jetty-vm/releases/download/v1.0.0/jetty-install.sh | bash -s -- --with-proxy
+```
 
 Then ask your preferred coding agent to set up a Jetty VM for the current
 project. For example:
