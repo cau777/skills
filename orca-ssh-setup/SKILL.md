@@ -479,10 +479,18 @@ TOML
 ```
 
 Now confirm CA trust actually landed — this needs a real intercepted call to
-prove, which is why it's checked here rather than right after installing it:
+prove, which is why it's checked here rather than right after installing it.
+**No `-f`** — a bare `GET /` against `api.anthropic.com` legitimately 502s
+(it's not a real endpoint), and `-f` would treat that as a curl failure,
+masking the actual signal. The thing this check verifies is that the TLS
+handshake completed and the response has an `Orca Local Interception CA`
+issuer, not that the HTTP status is 2xx:
 
 ```bash
-multipass exec <vm-name> -- bash -lc 'curl -fsS https://api.anthropic.com >/dev/null && echo "CA trust OK"'
+multipass exec <vm-name> -- bash -lc '
+  curl -sS -o /dev/null https://api.anthropic.com/ \
+    && echo "CA trust OK (a non-2xx status here is expected and fine — this only confirms curl completed the TLS handshake without a certificate error)"
+'
 ```
 
 Then verify the whole chain with one real call per harness — fail loudly

@@ -105,8 +105,11 @@ install -d -o "$TARGET_USER" -g "$TARGET_USER" "$INSTALL_DIR" "$DATA_DIR" "$UNIT
 cp -r "$REPO_DIR"/. "$INSTALL_DIR/source"
 chown -R "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR"
 as_user "cd $(printf '%q' "$INSTALL_DIR/source") && uv sync --no-dev"
-ln -sfn "$INSTALL_DIR/source/.venv" "$INSTALL_DIR/venv"
-chown -h "$TARGET_USER:$TARGET_USER" "$INSTALL_DIR/venv"
+# Created by the target user directly (they already own $INSTALL_DIR, as of
+# the chown -R above) rather than root creating it then handing ownership
+# over via a separate chown -h -- simpler, and sidesteps root creating a
+# symlink cau777 doesn't end up owning.
+as_user "ln -sfn $(printf '%q' "$INSTALL_DIR/source/.venv") $(printf '%q' "$INSTALL_DIR/venv")"
 
 # Stable, version-independent path for the systemd unit's `-s` argument —
 # proxy_addon.py's real location inside site-packages varies by Python
@@ -145,8 +148,9 @@ visudo -c -f "$SUDOERS_PATH"
 # Atomic repoint — the only step that changes what "current" (and therefore
 # the systemd unit) actually points at. No longer sudoers-relevant: the
 # firewall-sync helper lives outside this symlink chain entirely now.
-ln -sfn "$INSTALL_DIR" "$CURRENT_LINK"
-chown -h "$TARGET_USER:$TARGET_USER" "$CURRENT_LINK"
+# Created by the target user directly (they already own $DATA_DIR) for the
+# same reason as the venv symlink above.
+as_user "ln -sfn $(printf '%q' "$INSTALL_DIR") $(printf '%q' "$CURRENT_LINK")"
 
 echo "Starting orca-proxy.service"
 loginctl enable-linger "$TARGET_USER"
